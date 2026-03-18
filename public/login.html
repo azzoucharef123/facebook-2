@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>تسجيل دخول لوحة البوت</title>
+    <link rel="stylesheet" href="/public/styles.css" />
+  </head>
+  <body class="login-body">
+    <main class="auth-shell">
+      <section class="auth-panel">
+        <div class="auth-badge">Railway Control</div>
+        <h1>لوحة تحكم بوت فيسبوك</h1>
+        <p>
+          ادخل كلمة المرور للوصول إلى التحكم المباشر في الردود، الكلمات المفتاحية، الرسائل، والحالة
+          العامة للبوت.
+        </p>
+        <form id="login-form" class="auth-form">
+          <label>
+            <span>كلمة المرور</span>
+            <input type="password" name="password" placeholder="اكتب كلمة المرور" required />
+          </label>
+          <button type="submit">دخول</button>
+        </form>
+        <p id="login-message" class="status-text"></p>
+      </section>
+    </main>
+    <script>
+      const form = document.getElementById("login-form");
+      const message = document.getElementById("login-message");
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        message.textContent = "جار تسجيل الدخول...";
+
+        const formData = new FormData(form);
+        const payload = Object.fromEntries(formData.entries());
+
+        const response = await fetch("/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          message.textContent = data.error || "فشل تسجيل الدخول";
+          return;
+        }
+
+        window.location.href = "/";
+      });
+    </script>
+  </body>
+</html>
