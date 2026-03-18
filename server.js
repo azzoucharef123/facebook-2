@@ -30,6 +30,13 @@ const scanIntervalMs = Math.max(10000, Number(process.env.SCAN_INTERVAL_MS || 30
 const graphPageSizePosts = Math.max(1, Number(process.env.GRAPH_PAGE_SIZE_POSTS || 100));
 const graphPageSizeComments = Math.max(1, Number(process.env.GRAPH_PAGE_SIZE_COMMENTS || 100));
 
+function buildDefaultReplyVariants() {
+  return Array.from({ length: 110 }, (_, index) => {
+    const number = index + 1;
+    return `شكرا على تعليقك ${number}. سعدنا بتفاعلك مع الصفحة وسنخدمك بكل اهتمام.`;
+  }).join("\n");
+}
+
 const runtime = {
   scanning: false,
   queuedScan: false,
@@ -40,10 +47,6 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function normalizeScopeMode(value) {
-  return value === "all" || value === "all_posts" ? "all_posts" : "new_posts";
-}
-
 function createInitialState() {
   const now = nowIso();
   return {
@@ -52,24 +55,16 @@ function createInitialState() {
     automation: {
       reply: {
         enabled: true,
-        mode: "new_posts",
-        modeChangedAt: now,
-        message: "شكرا على تعليقك. سنراجع طلبك ونرد عليك بالتفصيل قريبا.",
+        message: buildDefaultReplyVariants(),
         delaySeconds: 25,
-        lastProcessedAt: null
+        lastProcessedAt: null,
+        nextVariantIndex: 0
       },
       like: {
         enabled: true,
-        mode: "new_posts",
-        modeChangedAt: now,
         delaySeconds: 10,
         lastProcessedAt: null
       }
-    },
-    scanLimits: {
-      maxPosts: toPositiveNumber(process.env.DEFAULT_MAX_POSTS, 200),
-      maxCommentsPerPost: toPositiveNumber(process.env.DEFAULT_MAX_COMMENTS_PER_POST, 500),
-      maxTotalComments: toPositiveNumber(process.env.DEFAULT_MAX_TOTAL_COMMENTS, 5000)
     },
     analytics: {
       scannedComments: 0,
@@ -86,8 +81,7 @@ function createInitialState() {
     actions: [],
     processed: {
       repliedCommentIds: [],
-      likedCommentIds: [],
-      seenPostIds: []
+      likedCommentIds: []
     },
     activity: [],
     createdAt: now,
@@ -133,10 +127,6 @@ function readState() {
           ...(parsed.automation?.like || {})
         }
       },
-      scanLimits: {
-        ...defaults.scanLimits,
-        ...(parsed.scanLimits || {})
-      },
       analytics: {
         ...defaults.analytics,
         ...(parsed.analytics || {})
@@ -152,13 +142,14 @@ function readState() {
           : [],
         likedCommentIds: Array.isArray(parsed.processed?.likedCommentIds)
           ? parsed.processed.likedCommentIds
-          : [],
-        seenPostIds: Array.isArray(parsed.processed?.seenPostIds) ? parsed.processed.seenPostIds : []
+          : []
       },
       activity: Array.isArray(parsed.activity) ? parsed.activity : []
     };
-    nextState.automation.reply.mode = normalizeScopeMode(nextState.automation.reply.mode);
-    nextState.automation.like.mode = normalizeScopeMode(nextState.automation.like.mode);
+    if (getReplyVariants(nextState.automation.reply.message).length < 100) {
+      nextState.automation.reply.message = buildDefaultReplyVariants();
+      nextState.automation.reply.nextVariantIndex = 0;
+    }
     return nextState;
   } catch (error) {
     console.error("Failed to read bot state:", error.message);
@@ -172,17 +163,7 @@ function sanitizeState(state) {
   return {
     enabled: state.enabled,
     pageId: state.pageId,
-    automation: {
-      reply: {
-        ...state.automation.reply,
-        mode: normalizeScopeMode(state.automation.reply.mode)
-      },
-      like: {
-        ...state.automation.like,
-        mode: normalizeScopeMode(state.automation.like.mode)
-      }
-    },
-    scanLimits: state.scanLimits,
+    automation: state.automation,
     analytics: {
       scannedComments: state.analytics.scannedComments,
       repliesSent: state.analytics.repliesSent,
@@ -277,6 +258,26 @@ function shrinkText(value, maxLength = 140) {
     return text;
   }
   return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
+function getReplyVariants(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 100);
+}
+
+function getNextReplyVariant(state) {
+  const variants = getReplyVariants(state.automation.reply.message);
+  if (!variants.length) {
+    throw new Error("No reply variants configured");
+  }
+
+  const index = Number(state.automation.reply.nextVariantIndex || 0) % variants.length;
+  const nextMessage = variants[index];
+  state.automation.reply.nextVariantIndex = (index + 1) % variants.length;
+  return nextMessage;
 }
 
 function tooManyAttempts(ipAddress) {
@@ -390,20 +391,11 @@ function mergeComment(existingComment, incomingComment) {
   };
 }
 
-function shouldProcessComment(comment, actionConfig, state, newPostIds) {
+function shouldProcessComment(comment) {
   if (!comment.message || isOwnComment(comment) || comment.parentId) {
     return false;
   }
-
-  if (actionConfig.mode === "all_posts") {
-    return true;
-  }
-
-  const anchor = new Date(actionConfig.modeChangedAt || state.createdAt).getTime();
-  return (
-    newPostIds.has(comment.postId) ||
-    new Date(comment.postCreatedAt || comment.createdAt).getTime() >= anchor
-  );
+  return true;
 }
 
 function queueAction(state, type, comment) {
@@ -526,34 +518,26 @@ async function fetchPagedCollection(nodePath, options = {}) {
   }
 }
 
-async function fetchPagePosts(state) {
+async function fetchPagePosts() {
   const payload = await fetchPagedCollection(`${pageId}/posts`, {
     query: {
       fields: "id,message,created_time,permalink_url",
       limit: graphPageSizePosts
     },
-    maxItems: state.scanLimits.maxPosts
+    maxItems: 0
   });
 
   return payload.map(normalizePost);
 }
 
-async function fetchTopLevelCommentsForPost(post, state, remainingCapacity) {
-  const perPostLimit =
-    state.scanLimits.maxCommentsPerPost > 0 ? state.scanLimits.maxCommentsPerPost : Number.MAX_SAFE_INTEGER;
-  const maxCommentsForThisPost = Math.min(perPostLimit, remainingCapacity);
-
-  if (maxCommentsForThisPost <= 0) {
-    return [];
-  }
-
+async function fetchTopLevelCommentsForPost(post) {
   const payload = await fetchPagedCollection(`${post.id}/comments`, {
     query: {
       fields: "id,message,created_time,permalink_url,from{id,name},comment_count,parent{id},like_count",
       filter: "stream",
       limit: graphPageSizeComments
     },
-    maxItems: maxCommentsForThisPost
+    maxItems: 0
   });
 
   return payload.map((rawComment) => normalizeComment(rawComment, post));
@@ -577,34 +561,12 @@ async function scanComments(reason) {
   }
 
   try {
-    const posts = await fetchPagePosts(state);
-    const knownPostIds = new Set(state.processed.seenPostIds || []);
-    const replyAnchor = new Date(state.automation.reply.modeChangedAt || state.createdAt).getTime();
-    const likeAnchor = new Date(state.automation.like.modeChangedAt || state.createdAt).getTime();
-    const newReplyPostIds = new Set(
-      posts
-        .filter((post) => !knownPostIds.has(post.id) || new Date(post.createdAt).getTime() >= replyAnchor)
-        .map((post) => post.id)
-    );
-    const newLikePostIds = new Set(
-      posts
-        .filter((post) => !knownPostIds.has(post.id) || new Date(post.createdAt).getTime() >= likeAnchor)
-        .map((post) => post.id)
-    );
+    const posts = await fetchPagePosts();
     const commentMap = new Map(state.comments.map((comment) => [comment.id, comment]));
     const discoveredComments = [];
 
     for (const post of posts) {
-      const remainingCapacity =
-        state.scanLimits.maxTotalComments > 0
-          ? state.scanLimits.maxTotalComments - discoveredComments.length
-          : Number.MAX_SAFE_INTEGER;
-
-      if (remainingCapacity <= 0) {
-        break;
-      }
-
-      const comments = await fetchTopLevelCommentsForPost(post, state, remainingCapacity);
+      const comments = await fetchTopLevelCommentsForPost(post);
       for (const comment of comments) {
         const merged = mergeComment(commentMap.get(comment.id), comment);
         commentMap.set(comment.id, merged);
@@ -614,8 +576,7 @@ async function scanComments(reason) {
 
     state.posts = posts;
     state.comments = sortCommentsNewestFirst(Array.from(commentMap.values()));
-    state.comments = capArray(state.comments, 400);
-    state.analytics.scannedComments = state.comments.length;
+    state.analytics.scannedComments = discoveredComments.length;
 
     const commentsForQueue = [...discoveredComments].sort(
       (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
@@ -624,7 +585,7 @@ async function scanComments(reason) {
     for (const comment of commentsForQueue) {
       if (
         state.automation.reply.enabled &&
-        shouldProcessComment(comment, state.automation.reply, state, newReplyPostIds) &&
+        shouldProcessComment(comment) &&
         !state.processed.repliedCommentIds.includes(comment.id)
       ) {
         queueAction(state, "reply", comment);
@@ -632,17 +593,12 @@ async function scanComments(reason) {
 
       if (
         state.automation.like.enabled &&
-        shouldProcessComment(comment, state.automation.like, state, newLikePostIds) &&
+        shouldProcessComment(comment) &&
         !state.processed.likedCommentIds.includes(comment.id)
       ) {
         queueAction(state, "like", comment);
       }
     }
-
-    state.processed.seenPostIds = capArray(
-      Array.from(new Set([...posts.map((post) => post.id), ...(state.processed.seenPostIds || [])])),
-      10000
-    );
 
     syncCommentStatusWithProcessed(state);
     addActivity(
@@ -720,7 +676,8 @@ async function processPendingActions() {
 
       try {
         if (action.type === "reply") {
-          await sendCommentReply(comment.id, state.automation.reply.message);
+          const replyMessage = getNextReplyVariant(state);
+          await sendCommentReply(comment.id, replyMessage);
           action.status = "done";
           action.processedAt = nowIso();
           config.lastProcessedAt = action.processedAt;
@@ -902,33 +859,21 @@ app.post("/api/toggle", authRequired, (req, res) => {
 
 app.post("/api/automation", authRequired, async (req, res) => {
   const state = readState();
-  const now = nowIso();
-  const nextReplyMode = req.body.replyMode === "all_posts" ? "all_posts" : "new_posts";
-  const nextLikeMode = req.body.likeMode === "all_posts" ? "all_posts" : "new_posts";
   const replyMessage = normalizeText(req.body.replyMessage);
 
-  if (Boolean(req.body.replyEnabled) && !replyMessage) {
-    return res.status(400).json({ ok: false, error: "Reply message is required when reply automation is enabled" });
+  if (!getReplyVariants(replyMessage).length) {
+    return res.status(400).json({ ok: false, error: "At least one reply variant is required" });
   }
 
-  state.automation.reply.enabled = Boolean(req.body.replyEnabled);
+  state.automation.reply.enabled = true;
   state.automation.reply.message = replyMessage;
   state.automation.reply.delaySeconds = toPositiveNumber(req.body.replyDelaySeconds, 25);
-  if (state.automation.reply.mode !== nextReplyMode) {
-    state.automation.reply.modeChangedAt = now;
+  if (!Number.isFinite(Number(state.automation.reply.nextVariantIndex))) {
+    state.automation.reply.nextVariantIndex = 0;
   }
-  state.automation.reply.mode = nextReplyMode;
 
-  state.automation.like.enabled = Boolean(req.body.likeEnabled);
+  state.automation.like.enabled = true;
   state.automation.like.delaySeconds = toPositiveNumber(req.body.likeDelaySeconds, 10);
-  if (state.automation.like.mode !== nextLikeMode) {
-    state.automation.like.modeChangedAt = now;
-  }
-  state.automation.like.mode = nextLikeMode;
-
-  state.scanLimits.maxPosts = toPositiveNumber(req.body.maxPosts, 200);
-  state.scanLimits.maxCommentsPerPost = toPositiveNumber(req.body.maxCommentsPerPost, 500);
-  state.scanLimits.maxTotalComments = toPositiveNumber(req.body.maxTotalComments, 5000);
 
   addActivity(state, "settings", "تم تحديث إعدادات الرد والإعجاب على التعليقات.");
   writeState(state);

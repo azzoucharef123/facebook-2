@@ -9,16 +9,10 @@ const stateElements = {
   recommendedField: document.getElementById("recommended-field"),
   pageIdText: document.getElementById("page-id-text"),
   lastScanText: document.getElementById("last-scan-text"),
-  replyEnabled: document.getElementById("reply-enabled"),
-  replyMode: document.getElementById("reply-mode"),
   replyMessage: document.getElementById("reply-message"),
   replyDelay: document.getElementById("reply-delay"),
-  likeEnabled: document.getElementById("like-enabled"),
-  likeMode: document.getElementById("like-mode"),
   likeDelay: document.getElementById("like-delay"),
-  maxPosts: document.getElementById("max-posts"),
-  maxCommentsPerPost: document.getElementById("max-comments-per-post"),
-  maxTotalComments: document.getElementById("max-total-comments"),
+  autosaveStatus: document.getElementById("autosave-status"),
   commentsList: document.getElementById("comments-list"),
   activityList: document.getElementById("activity-list"),
   toast: document.getElementById("toast")
@@ -95,16 +89,9 @@ function renderState(state) {
   stateElements.pageIdText.textContent = state.pageId || "-";
   stateElements.lastScanText.textContent = formatDate(state.analytics.lastScanAt);
 
-  stateElements.replyEnabled.checked = state.automation.reply.enabled;
-  stateElements.replyMode.value = state.automation.reply.mode;
   stateElements.replyMessage.value = state.automation.reply.message || "";
   stateElements.replyDelay.value = state.automation.reply.delaySeconds;
-  stateElements.likeEnabled.checked = state.automation.like.enabled;
-  stateElements.likeMode.value = state.automation.like.mode;
   stateElements.likeDelay.value = state.automation.like.delaySeconds;
-  stateElements.maxPosts.value = state.scanLimits.maxPosts;
-  stateElements.maxCommentsPerPost.value = state.scanLimits.maxCommentsPerPost;
-  stateElements.maxTotalComments.value = state.scanLimits.maxTotalComments;
 
   stateElements.commentsList.innerHTML = state.comments.length
     ? state.comments
@@ -174,32 +161,39 @@ document.getElementById("enabled-toggle").addEventListener("change", async (even
   }
 });
 
-document.getElementById("automation-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-
+async function saveAutomationSettings() {
   const payload = {
-    replyEnabled: stateElements.replyEnabled.checked,
-    replyMode: stateElements.replyMode.value,
     replyMessage: stateElements.replyMessage.value,
     replyDelaySeconds: Number(stateElements.replyDelay.value || 0),
-    likeEnabled: stateElements.likeEnabled.checked,
-    likeMode: stateElements.likeMode.value,
-    likeDelaySeconds: Number(stateElements.likeDelay.value || 0),
-    maxPosts: Number(stateElements.maxPosts.value || 0),
-    maxCommentsPerPost: Number(stateElements.maxCommentsPerPost.value || 0),
-    maxTotalComments: Number(stateElements.maxTotalComments.value || 0)
+    likeDelaySeconds: Number(stateElements.likeDelay.value || 0)
   };
 
+  stateElements.autosaveStatus.textContent = "جار الحفظ التلقائي...";
   try {
     const data = await request("/api/automation", {
       method: "POST",
       body: JSON.stringify(payload)
     });
     renderState(data.state);
-    showToast("تم حفظ إعدادات الرد والإعجاب");
+    stateElements.autosaveStatus.textContent = "تم الحفظ تلقائيًا.";
   } catch (error) {
+    stateElements.autosaveStatus.textContent = "فشل الحفظ التلقائي.";
     showToast(error.message, true);
   }
+}
+
+let autosaveTimer = null;
+
+function scheduleAutosave() {
+  stateElements.autosaveStatus.textContent = "هناك تغييرات غير محفوظة...";
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(() => {
+    saveAutomationSettings().catch(() => {});
+  }, 700);
+}
+
+[stateElements.replyMessage, stateElements.replyDelay, stateElements.likeDelay].forEach((element) => {
+  element.addEventListener("input", scheduleAutosave);
 });
 
 document.getElementById("scan-btn").addEventListener("click", async () => {

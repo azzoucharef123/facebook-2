@@ -59,21 +59,11 @@
           </div>
         </div>
         <form id="automation-form" class="stack-form">
-          <label class="toggle">
-            <input id="reply-enabled" name="replyEnabled" type="checkbox" />
-            <span>تفعيل الرد على تعليقات المنشورات</span>
-          </label>
-          <label>
-            <span>نطاق الرد</span>
-            <select id="reply-mode" name="replyMode">
-              <option value="new_posts">المنشورات الجديدة</option>
-              <option value="all_posts">كل المنشورات</option>
-            </select>
-          </label>
           <label>
             <span>نص الرد</span>
-            <textarea id="reply-message" name="replyMessage" rows="5"></textarea>
+            <textarea id="reply-message" name="replyMessage" rows="12"></textarea>
           </label>
+          <p class="status-text">اكتب كل رد في سطر مستقل. النظام سيستخدم أول 100 رد بالتناوب ثم يعود إلى الأول.</p>
           <label>
             <span>الزمن بين كل رد والذي يليه بالثواني</span>
             <input id="reply-delay" name="replyDelaySeconds" type="number" min="0" step="1" />
@@ -81,39 +71,11 @@
 
           <hr class="section-divider" />
 
-          <label class="toggle">
-            <input id="like-enabled" name="likeEnabled" type="checkbox" />
-            <span>تفعيل الإعجاب بتعليقات المنشورات</span>
-          </label>
-          <label>
-            <span>نطاق الإعجاب</span>
-            <select id="like-mode" name="likeMode">
-              <option value="new_posts">تعليقات المنشورات الجديدة</option>
-              <option value="all_posts">تعليقات حتى المنشورات القديمة</option>
-            </select>
-          </label>
           <label>
             <span>الزمن بين كل إعجاب والذي يليه بالثواني</span>
             <input id="like-delay" name="likeDelaySeconds" type="number" min="0" step="1" />
           </label>
-
-          <hr class="section-divider" />
-
-          <label>
-            <span>الحد الأقصى للمنشورات في كل فحص</span>
-            <input id="max-posts" name="maxPosts" type="number" min="0" step="1" />
-          </label>
-          <label>
-            <span>الحد الأقصى لتعليقات كل منشور</span>
-            <input id="max-comments-per-post" name="maxCommentsPerPost" type="number" min="0" step="1" />
-          </label>
-          <label>
-            <span>الحد الأقصى لإجمالي التعليقات في كل فحص</span>
-            <input id="max-total-comments" name="maxTotalComments" type="number" min="0" step="1" />
-          </label>
-          <p class="status-text">ضع القيمة 0 إذا أردت بدون حد.</p>
-
-          <button type="submit">حفظ الإعدادات</button>
+          <p id="autosave-status" class="status-text">الحفظ التلقائي مفعل.</p>
         </form>
       </section>
 
