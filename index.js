@@ -4,8 +4,7 @@ const app = express();
 
 app.use(express.json());
 
-const PAGE_ACCESS_TOKEN = "EAATTbmxCOKkBQy1wo6tGQdjy5MBNEzIj8XZAeFdi0OO5Aso5DfZAwgZC2ZCmyC2Y5mETMDyWpg1luHQQZCsEJHeZCy1SbCU9w7vp1fVUm4DR2vJVXqflgZBmRtBVTbQ01MautyU2gXuFkxG3fZB1fvPHPUfd8Sq4dWZAcA9FYJEn4apUkAjMxebTWx1W0OieEUZAoFZB7j8IiXIjTbAH6lvMZBa1KdRGA5YxPXJk3l1lu5vGrnvi38eKMKfEfwZDZD";
-
+const PAGE_ACCESS_TOKEN = "EAATTbmxCOKkBQ9Y6QWzpp112drGI24KvqRca5i61GhbUWyBefuLYnOIjgEnUskODfr6AZAI7oujIa6M1BSdYTv44SEmZAdg6eaLZA9vHH25GZCqkAmsEpHnANawFbclPl50xMi5tKJjNjIHz9xfJlFKTHsXz9Qs92mHubXvbyBdntx36dQqZC2o9xykETQ0faz6ZBjmIXJfwOyz4sYunvSRGHE"
 // التحقق من webhook
 app.get('/webhook', (req, res) => {
   const VERIFY_TOKEN = "c4c16881d180fc06fe46338c4691f0b242f0b42b5c5518e6";
@@ -32,7 +31,7 @@ app.post('/webhook', async (req, res) => {
 
         if (event.message && event.message.text) {
           await axios.post(
-            `https://graph.facebook.com/v18.0/me/messages?access_token=${EAATTbmxCOKkBQy1wo6tGQdjy5MBNEzIj8XZAeFdi0OO5Aso5DfZAwgZC2ZCmyC2Y5mETMDyWpg1luHQQZCsEJHeZCy1SbCU9w7vp1fVUm4DR2vJVXqflgZBmRtBVTbQ01MautyU2gXuFkxG3fZB1fvPHPUfd8Sq4dWZAcA9FYJEn4apUkAjMxebTWx1W0OieEUZAoFZB7j8IiXIjTbAH6lvMZBa1KdRGA5YxPXJk3l1lu5vGrnvi38eKMKfEfwZDZD}`,
+            `https://graph.facebook.com/v18.0/me/messages?access_token=${EAATTbmxCOKkBQ9Y6QWzpp112drGI24KvqRca5i61GhbUWyBefuLYnOIjgEnUskODfr6AZAI7oujIa6M1BSdYTv44SEmZAdg6eaLZA9vHH25GZCqkAmsEpHnANawFbclPl50xMi5tKJjNjIHz9xfJlFKTHsXz9Qs92mHubXvbyBdntx36dQqZC2o9xykETQ0faz6ZBjmIXJfwOyz4sYunvSRGHE}`,
             {
               recipient: { id: senderId },
               message: { text: "تم استلام رسالتك 👍" }
