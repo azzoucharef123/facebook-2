@@ -133,16 +133,6 @@ button:hover,
   color: var(--muted);
 }
 
-.diagnostic-banner {
-  margin: 0 0 18px;
-  padding: 14px 16px;
-  border-radius: 16px;
-  background: rgba(166, 50, 50, 0.1);
-  border: 1px solid rgba(166, 50, 50, 0.16);
-  color: var(--danger);
-  line-height: 1.8;
-}
-
 .dashboard-body {
   padding: 22px;
 }

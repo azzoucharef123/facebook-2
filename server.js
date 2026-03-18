@@ -160,10 +160,6 @@ function readState() {
 
 function sanitizeState(state) {
   const pendingActions = state.actions.filter((action) => action.status === "pending").length;
-  const latestError = state.activity.find((item) => item.kind === "error") || null;
-  const lastErrorMessage = latestError?.message || "";
-  const tokenExpired =
-    /access token|session has expired|error validating access token/i.test(lastErrorMessage);
   return {
     enabled: state.enabled,
     pageId: state.pageId,
@@ -182,10 +178,6 @@ function sanitizeState(state) {
     posts: state.posts.slice(0, 8),
     comments: state.comments.slice(0, 120),
     activity: state.activity.slice(0, 80),
-    diagnostics: {
-      lastErrorMessage,
-      tokenExpired
-    },
     appUrl,
     webhookUrl: appUrl ? `${appUrl}/webhook` : "",
     verifyTokenConfigured: Boolean(verifyToken),

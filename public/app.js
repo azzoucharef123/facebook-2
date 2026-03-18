@@ -1,6 +1,5 @@
 const stateElements = {
   statusTitle: document.getElementById("status-title"),
-  diagnosticBanner: document.getElementById("diagnostic-banner"),
   enabledToggle: document.getElementById("enabled-toggle"),
   commentsCount: document.getElementById("comments-count"),
   repliesCount: document.getElementById("replies-count"),
@@ -79,11 +78,7 @@ function renderBadge(status) {
 }
 
 function renderState(state) {
-  const diagnostic = state.diagnostics || {};
   stateElements.statusTitle.textContent = state.enabled ? "الأتمتة تعمل الآن" : "الأتمتة متوقفة";
-  if (diagnostic.tokenExpired) {
-    stateElements.statusTitle.textContent = "الأتمتة متوقفة فعليًا بسبب التوكن";
-  }
   stateElements.enabledToggle.checked = state.enabled;
   stateElements.commentsCount.textContent = state.analytics.scannedComments;
   stateElements.repliesCount.textContent = state.analytics.repliesSent;
@@ -93,15 +88,6 @@ function renderState(state) {
   stateElements.recommendedField.textContent = state.recommendedWebhookField;
   stateElements.pageIdText.textContent = state.pageId || "-";
   stateElements.lastScanText.textContent = formatDate(state.analytics.lastScanAt);
-  if (diagnostic.lastErrorMessage) {
-    stateElements.diagnosticBanner.textContent = diagnostic.tokenExpired
-      ? "فشل الفحص لأن PAGE_ACCESS_TOKEN منتهي الصلاحية أو غير صالح. حدّثه في Railway Variables ثم أعد النشر."
-      : diagnostic.lastErrorMessage;
-    stateElements.diagnosticBanner.classList.remove("hidden");
-  } else {
-    stateElements.diagnosticBanner.textContent = "";
-    stateElements.diagnosticBanner.classList.add("hidden");
-  }
 
   stateElements.replyMessage.value = state.automation.reply.message || "";
   stateElements.replyDelay.value = state.automation.reply.delaySeconds;
