@@ -86,7 +86,8 @@ function createInitialState() {
     actions: [],
     processed: {
       repliedCommentIds: [],
-      likedCommentIds: []
+      likedCommentIds: [],
+      seenPostIds: []
     },
     activity: [],
     createdAt: now,
@@ -151,7 +152,8 @@ function readState() {
           : [],
         likedCommentIds: Array.isArray(parsed.processed?.likedCommentIds)
           ? parsed.processed.likedCommentIds
-          : []
+          : [],
+        seenPostIds: Array.isArray(parsed.processed?.seenPostIds) ? parsed.processed.seenPostIds : []
       },
       activity: Array.isArray(parsed.activity) ? parsed.activity : []
     };
@@ -388,7 +390,7 @@ function mergeComment(existingComment, incomingComment) {
   };
 }
 
-function shouldProcessComment(comment, actionConfig, state) {
+function shouldProcessComment(comment, actionConfig, state, newPostIds) {
   if (!comment.message || isOwnComment(comment) || comment.parentId) {
     return false;
   }
@@ -398,7 +400,10 @@ function shouldProcessComment(comment, actionConfig, state) {
   }
 
   const anchor = new Date(actionConfig.modeChangedAt || state.createdAt).getTime();
-  return new Date(comment.postCreatedAt || comment.createdAt).getTime() >= anchor;
+  return (
+    newPostIds.has(comment.postId) ||
+    new Date(comment.postCreatedAt || comment.createdAt).getTime() >= anchor
+  );
 }
 
 function queueAction(state, type, comment) {
@@ -573,6 +578,19 @@ async function scanComments(reason) {
 
   try {
     const posts = await fetchPagePosts(state);
+    const knownPostIds = new Set(state.processed.seenPostIds || []);
+    const replyAnchor = new Date(state.automation.reply.modeChangedAt || state.createdAt).getTime();
+    const likeAnchor = new Date(state.automation.like.modeChangedAt || state.createdAt).getTime();
+    const newReplyPostIds = new Set(
+      posts
+        .filter((post) => !knownPostIds.has(post.id) || new Date(post.createdAt).getTime() >= replyAnchor)
+        .map((post) => post.id)
+    );
+    const newLikePostIds = new Set(
+      posts
+        .filter((post) => !knownPostIds.has(post.id) || new Date(post.createdAt).getTime() >= likeAnchor)
+        .map((post) => post.id)
+    );
     const commentMap = new Map(state.comments.map((comment) => [comment.id, comment]));
     const discoveredComments = [];
 
@@ -606,7 +624,7 @@ async function scanComments(reason) {
     for (const comment of commentsForQueue) {
       if (
         state.automation.reply.enabled &&
-        shouldProcessComment(comment, state.automation.reply, state) &&
+        shouldProcessComment(comment, state.automation.reply, state, newReplyPostIds) &&
         !state.processed.repliedCommentIds.includes(comment.id)
       ) {
         queueAction(state, "reply", comment);
@@ -614,12 +632,17 @@ async function scanComments(reason) {
 
       if (
         state.automation.like.enabled &&
-        shouldProcessComment(comment, state.automation.like, state) &&
+        shouldProcessComment(comment, state.automation.like, state, newLikePostIds) &&
         !state.processed.likedCommentIds.includes(comment.id)
       ) {
         queueAction(state, "like", comment);
       }
     }
+
+    state.processed.seenPostIds = capArray(
+      Array.from(new Set([...posts.map((post) => post.id), ...(state.processed.seenPostIds || [])])),
+      10000
+    );
 
     syncCommentStatusWithProcessed(state);
     addActivity(
