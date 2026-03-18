@@ -14,7 +14,7 @@ const appUrl =
   (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : "");
 const pageAccessToken = process.env.PAGE_ACCESS_TOKEN || "";
 const pageId = process.env.PAGE_ID || "";
-const verifyToken = process.env.VERIFY_TOKEN || "railway-facebook-bot-verify-2026";
+const verifyToken = process.env.VERIFY_TOKEN || "c4c16881d180fc06fe46338c4691f0b242f0b42b5c5518e6";
 const dashboardPassword = process.env.DASHBOARD_PASSWORD || "ChangeThisPasswordNow-2026";
 const dataDir = path.resolve(
   process.cwd(),
