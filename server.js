@@ -26,7 +26,7 @@ const sessionSecret =
   crypto.createHash("sha256").update(`${dashboardPassword}:${verifyToken}`).digest("hex");
 const sessionMaxAgeMs = 1000 * 60 * 60 * 12;
 const loginAttempts = new Map();
-const scanIntervalMs = Math.max(10000, Number(process.env.SCAN_INTERVAL_MS || 30000));
+const scanIntervalMs = Math.max(10000, Number(process.env.SCAN_INTERVAL_MS || 60000));
 const graphPageSizePosts = Math.max(1, Number(process.env.GRAPH_PAGE_SIZE_POSTS || 100));
 const graphPageSizeComments = Math.max(1, Number(process.env.GRAPH_PAGE_SIZE_COMMENTS || 100));
 
