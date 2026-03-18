@@ -26,10 +26,9 @@ const sessionSecret =
   crypto.createHash("sha256").update(`${dashboardPassword}:${verifyToken}`).digest("hex");
 const sessionMaxAgeMs = 1000 * 60 * 60 * 12;
 const loginAttempts = new Map();
-const postsLimit = Math.max(1, Number(process.env.POSTS_LIMIT || 8));
-const topCommentsLimit = Math.max(1, Number(process.env.TOP_COMMENTS_LIMIT || 40));
 const scanIntervalMs = Math.max(10000, Number(process.env.SCAN_INTERVAL_MS || 30000));
-const postWindowDays = Math.max(1, Number(process.env.POST_WINDOW_DAYS || 14));
+const graphPageSizePosts = Math.max(1, Number(process.env.GRAPH_PAGE_SIZE_POSTS || 100));
+const graphPageSizeComments = Math.max(1, Number(process.env.GRAPH_PAGE_SIZE_COMMENTS || 100));
 
 const runtime = {
   scanning: false,
@@ -66,6 +65,11 @@ function createInitialState() {
         delaySeconds: 10,
         lastProcessedAt: null
       }
+    },
+    scanLimits: {
+      maxPosts: toPositiveNumber(process.env.DEFAULT_MAX_POSTS, 200),
+      maxCommentsPerPost: toPositiveNumber(process.env.DEFAULT_MAX_COMMENTS_PER_POST, 500),
+      maxTotalComments: toPositiveNumber(process.env.DEFAULT_MAX_TOTAL_COMMENTS, 5000)
     },
     analytics: {
       scannedComments: 0,
@@ -128,6 +132,10 @@ function readState() {
           ...(parsed.automation?.like || {})
         }
       },
+      scanLimits: {
+        ...defaults.scanLimits,
+        ...(parsed.scanLimits || {})
+      },
       analytics: {
         ...defaults.analytics,
         ...(parsed.analytics || {})
@@ -172,6 +180,7 @@ function sanitizeState(state) {
         mode: normalizeScopeMode(state.automation.like.mode)
       }
     },
+    scanLimits: state.scanLimits,
     analytics: {
       scannedComments: state.analytics.scannedComments,
       repliesSent: state.analytics.repliesSent,
@@ -476,30 +485,73 @@ async function graphRequest(nodePath, options = {}) {
   return payload;
 }
 
-async function fetchPagePosts() {
-  const payload = await graphRequest(`${pageId}/posts`, {
-    query: {
-      fields: "id,message,created_time,permalink_url",
-      limit: postsLimit
-    }
-  });
+async function graphRequestByUrl(url, method = "GET") {
+  const response = await fetch(url, { method });
+  const payload = await response.json().catch(() => ({}));
 
-  const cutoff = Date.now() - postWindowDays * 24 * 60 * 60 * 1000;
-  return (payload.data || [])
-    .map(normalizePost)
-    .filter((post) => new Date(post.createdAt).getTime() >= cutoff);
+  if (!response.ok || payload.error) {
+    throw new Error(payload.error?.message || "Graph API paged request failed");
+  }
+
+  return payload;
 }
 
-async function fetchTopLevelCommentsForPost(post) {
-  const payload = await graphRequest(`${post.id}/comments`, {
+async function fetchPagedCollection(nodePath, options = {}) {
+  const items = [];
+  const query = { ...(options.query || {}) };
+  let payload = await graphRequest(nodePath, {
+    query
+  });
+
+  while (true) {
+    for (const item of payload.data || []) {
+      items.push(item);
+
+      if (options.maxItems > 0 && items.length >= options.maxItems) {
+        return items;
+      }
+    }
+
+    const nextUrl = payload.paging?.next;
+    if (!nextUrl) {
+      return items;
+    }
+
+    payload = await graphRequestByUrl(nextUrl);
+  }
+}
+
+async function fetchPagePosts(state) {
+  const payload = await fetchPagedCollection(`${pageId}/posts`, {
+    query: {
+      fields: "id,message,created_time,permalink_url",
+      limit: graphPageSizePosts
+    },
+    maxItems: state.scanLimits.maxPosts
+  });
+
+  return payload.map(normalizePost);
+}
+
+async function fetchTopLevelCommentsForPost(post, state, remainingCapacity) {
+  const perPostLimit =
+    state.scanLimits.maxCommentsPerPost > 0 ? state.scanLimits.maxCommentsPerPost : Number.MAX_SAFE_INTEGER;
+  const maxCommentsForThisPost = Math.min(perPostLimit, remainingCapacity);
+
+  if (maxCommentsForThisPost <= 0) {
+    return [];
+  }
+
+  const payload = await fetchPagedCollection(`${post.id}/comments`, {
     query: {
       fields: "id,message,created_time,permalink_url,from{id,name},comment_count,parent{id},like_count",
       filter: "stream",
-      limit: topCommentsLimit
-    }
+      limit: graphPageSizeComments
+    },
+    maxItems: maxCommentsForThisPost
   });
 
-  return (payload.data || []).map((rawComment) => normalizeComment(rawComment, post));
+  return payload.map((rawComment) => normalizeComment(rawComment, post));
 }
 
 async function scanComments(reason) {
@@ -520,12 +572,21 @@ async function scanComments(reason) {
   }
 
   try {
-    const posts = await fetchPagePosts();
+    const posts = await fetchPagePosts(state);
     const commentMap = new Map(state.comments.map((comment) => [comment.id, comment]));
     const discoveredComments = [];
 
     for (const post of posts) {
-      const comments = await fetchTopLevelCommentsForPost(post);
+      const remainingCapacity =
+        state.scanLimits.maxTotalComments > 0
+          ? state.scanLimits.maxTotalComments - discoveredComments.length
+          : Number.MAX_SAFE_INTEGER;
+
+      if (remainingCapacity <= 0) {
+        break;
+      }
+
+      const comments = await fetchTopLevelCommentsForPost(post, state, remainingCapacity);
       for (const comment of comments) {
         const merged = mergeComment(commentMap.get(comment.id), comment);
         commentMap.set(comment.id, merged);
@@ -841,6 +902,10 @@ app.post("/api/automation", authRequired, async (req, res) => {
     state.automation.like.modeChangedAt = now;
   }
   state.automation.like.mode = nextLikeMode;
+
+  state.scanLimits.maxPosts = toPositiveNumber(req.body.maxPosts, 200);
+  state.scanLimits.maxCommentsPerPost = toPositiveNumber(req.body.maxCommentsPerPost, 500);
+  state.scanLimits.maxTotalComments = toPositiveNumber(req.body.maxTotalComments, 5000);
 
   addActivity(state, "settings", "تم تحديث إعدادات الرد والإعجاب على التعليقات.");
   writeState(state);

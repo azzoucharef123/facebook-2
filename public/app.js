@@ -16,6 +16,9 @@ const stateElements = {
   likeEnabled: document.getElementById("like-enabled"),
   likeMode: document.getElementById("like-mode"),
   likeDelay: document.getElementById("like-delay"),
+  maxPosts: document.getElementById("max-posts"),
+  maxCommentsPerPost: document.getElementById("max-comments-per-post"),
+  maxTotalComments: document.getElementById("max-total-comments"),
   commentsList: document.getElementById("comments-list"),
   activityList: document.getElementById("activity-list"),
   toast: document.getElementById("toast")
@@ -99,6 +102,9 @@ function renderState(state) {
   stateElements.likeEnabled.checked = state.automation.like.enabled;
   stateElements.likeMode.value = state.automation.like.mode;
   stateElements.likeDelay.value = state.automation.like.delaySeconds;
+  stateElements.maxPosts.value = state.scanLimits.maxPosts;
+  stateElements.maxCommentsPerPost.value = state.scanLimits.maxCommentsPerPost;
+  stateElements.maxTotalComments.value = state.scanLimits.maxTotalComments;
 
   stateElements.commentsList.innerHTML = state.comments.length
     ? state.comments
@@ -178,7 +184,10 @@ document.getElementById("automation-form").addEventListener("submit", async (eve
     replyDelaySeconds: Number(stateElements.replyDelay.value || 0),
     likeEnabled: stateElements.likeEnabled.checked,
     likeMode: stateElements.likeMode.value,
-    likeDelaySeconds: Number(stateElements.likeDelay.value || 0)
+    likeDelaySeconds: Number(stateElements.likeDelay.value || 0),
+    maxPosts: Number(stateElements.maxPosts.value || 0),
+    maxCommentsPerPost: Number(stateElements.maxCommentsPerPost.value || 0),
+    maxTotalComments: Number(stateElements.maxTotalComments.value || 0)
   };
 
   try {
