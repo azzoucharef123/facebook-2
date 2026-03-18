@@ -3,17 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>لوحة تحكم البوت</title>
+    <title>لوحة أتمتة التعليقات</title>
     <link rel="stylesheet" href="/public/styles.css" />
   </head>
   <body class="dashboard-body">
     <header class="topbar">
       <div>
-        <p class="eyebrow">Facebook Messenger Bot</p>
-        <h1>لوحة التحكم الاحترافية</h1>
+        <p class="eyebrow">Facebook Comment Automation</p>
+        <h1>الرد والإعجاب على التعليقات</h1>
       </div>
       <div class="topbar-actions">
         <a class="ghost-button" href="/setup">إعداد Webhook</a>
+        <button id="scan-btn" class="ghost-button" type="button">فحص الآن</button>
         <button id="logout-btn" class="ghost-button" type="button">خروج</button>
       </div>
     </header>
@@ -27,25 +28,25 @@
           </div>
           <label class="toggle">
             <input id="enabled-toggle" type="checkbox" />
-            <span>تشغيل البوت</span>
+            <span>تشغيل النظام</span>
           </label>
         </div>
         <div class="stats-grid">
           <article>
-            <span>الرسائل الواردة</span>
-            <strong id="incoming-count">0</strong>
+            <span>التعليقات المرصودة</span>
+            <strong id="comments-count">0</strong>
           </article>
           <article>
-            <span>الرسائل الصادرة</span>
-            <strong id="outgoing-count">0</strong>
+            <span>الردود المرسلة</span>
+            <strong id="replies-count">0</strong>
           </article>
           <article>
-            <span>العملاء المسجلون</span>
-            <strong id="users-count">0</strong>
+            <span>الإعجابات المنفذة</span>
+            <strong id="likes-count">0</strong>
           </article>
           <article>
-            <span>Webhook</span>
-            <strong id="webhook-status">-</strong>
+            <span>المهام المعلقة</span>
+            <strong id="pending-count">0</strong>
           </article>
         </div>
       </section>
@@ -53,19 +54,49 @@
       <section class="card">
         <div class="card-head">
           <div>
-            <p class="eyebrow">الردود التلقائية</p>
-            <h2>رسالة الترحيب والرد الافتراضي</h2>
+            <p class="eyebrow">الرد التلقائي</p>
+            <h2>التحكم في ردود التعليقات</h2>
           </div>
         </div>
-        <form id="settings-form" class="stack-form">
-          <label>
-            <span>رسالة الترحيب</span>
-            <textarea name="welcomeMessage" id="welcome-message" rows="4"></textarea>
+        <form id="automation-form" class="stack-form">
+          <label class="toggle">
+            <input id="reply-enabled" name="replyEnabled" type="checkbox" />
+            <span>تفعيل الرد على التعليقات</span>
           </label>
           <label>
-            <span>الرد الافتراضي</span>
-            <textarea name="defaultReply" id="default-reply" rows="4"></textarea>
+            <span>نطاق الرد</span>
+            <select id="reply-mode" name="replyMode">
+              <option value="new">التعليقات الجديدة فقط</option>
+              <option value="all">كل التعليقات الحالية</option>
+            </select>
           </label>
+          <label>
+            <span>نص الرد</span>
+            <textarea id="reply-message" name="replyMessage" rows="5"></textarea>
+          </label>
+          <label>
+            <span>الزمن بين كل رد والذي يليه بالثواني</span>
+            <input id="reply-delay" name="replyDelaySeconds" type="number" min="0" step="1" />
+          </label>
+
+          <hr class="section-divider" />
+
+          <label class="toggle">
+            <input id="like-enabled" name="likeEnabled" type="checkbox" />
+            <span>تفعيل الإعجاب بالتعليقات</span>
+          </label>
+          <label>
+            <span>نطاق الإعجاب</span>
+            <select id="like-mode" name="likeMode">
+              <option value="new">التعليقات الجديدة فقط</option>
+              <option value="all">كل التعليقات الحالية</option>
+            </select>
+          </label>
+          <label>
+            <span>الزمن بين كل إعجاب والذي يليه بالثواني</span>
+            <input id="like-delay" name="likeDelaySeconds" type="number" min="0" step="1" />
+          </label>
+
           <button type="submit">حفظ الإعدادات</button>
         </form>
       </section>
@@ -73,78 +104,56 @@
       <section class="card">
         <div class="card-head">
           <div>
-            <p class="eyebrow">ذكاء الكلمات</p>
-            <h2>الكلمات المفتاحية</h2>
+            <p class="eyebrow">تفاصيل الربط</p>
+            <h2>الصفحة وWebhook</h2>
           </div>
         </div>
-        <form id="keyword-form" class="stack-form compact-form">
-          <label>
-            <span>الكلمة المفتاحية</span>
-            <input name="keyword" type="text" placeholder="مثال: الدفع" required />
-          </label>
-          <label>
-            <span>الرد</span>
-            <textarea name="reply" rows="3" placeholder="الرد المرتبط بهذه الكلمة" required></textarea>
-          </label>
-          <button type="submit">إضافة قاعدة</button>
-        </form>
-        <div id="keywords-list" class="list-shell"></div>
-      </section>
-
-      <section class="card">
-        <div class="card-head">
-          <div>
-            <p class="eyebrow">إرسال مباشر</p>
-            <h2>رسالة لعميل محدد</h2>
-          </div>
+        <div class="info-grid">
+          <article class="list-item compact">
+            <div>
+              <strong>Webhook</strong>
+              <p id="webhook-status">-</p>
+            </div>
+          </article>
+          <article class="list-item compact">
+            <div>
+              <strong>الحقل الموصى به</strong>
+              <p id="recommended-field">feed</p>
+            </div>
+          </article>
+          <article class="list-item compact">
+            <div>
+              <strong>Page ID</strong>
+              <p id="page-id-text">-</p>
+            </div>
+          </article>
+          <article class="list-item compact">
+            <div>
+              <strong>آخر فحص</strong>
+              <p id="last-scan-text">-</p>
+            </div>
+          </article>
         </div>
-        <form id="message-form" class="stack-form compact-form">
-          <label>
-            <span>العميل</span>
-            <select name="recipientId" id="recipient-id"></select>
-          </label>
-          <label>
-            <span>الرسالة</span>
-            <textarea name="message" rows="4" placeholder="اكتب الرسالة" required></textarea>
-          </label>
-          <button type="submit">إرسال</button>
-        </form>
-      </section>
-
-      <section class="card">
-        <div class="card-head">
-          <div>
-            <p class="eyebrow">إرسال جماعي</p>
-            <h2>للعملاء النشطين خلال 24 ساعة</h2>
-          </div>
-        </div>
-        <form id="broadcast-form" class="stack-form">
-          <label>
-            <span>رسالة البث</span>
-            <textarea name="message" rows="4" placeholder="رسالة جماعية للعملاء النشطين" required></textarea>
-          </label>
-          <button type="submit">تنفيذ البث</button>
-        </form>
       </section>
 
       <section class="card wide-card">
         <div class="card-head">
           <div>
-            <p class="eyebrow">آخر التفاعلات</p>
-            <h2>سجل المحادثات</h2>
+            <p class="eyebrow">آخر التعليقات</p>
+            <h2>قائمة التعليقات التي يتابعها النظام</h2>
           </div>
         </div>
-        <div id="conversations-list" class="conversation-shell"></div>
+        <div id="comments-list" class="list-shell"></div>
       </section>
 
       <section class="card wide-card">
         <div class="card-head">
           <div>
-            <p class="eyebrow">العملاء</p>
-            <h2>آخر المستخدمين</h2>
+            <p class="eyebrow">سجل العمليات</p>
+            <h2>آخر ما قام به النظام</h2>
           </div>
         </div>
-        <div id="users-list" class="list-shell"></div>
+        <div id="activity-list" class="conversation-shell"></div>
       </section>
     </main>
 

@@ -1,16 +1,23 @@
 const stateElements = {
   statusTitle: document.getElementById("status-title"),
   enabledToggle: document.getElementById("enabled-toggle"),
-  incomingCount: document.getElementById("incoming-count"),
-  outgoingCount: document.getElementById("outgoing-count"),
-  usersCount: document.getElementById("users-count"),
+  commentsCount: document.getElementById("comments-count"),
+  repliesCount: document.getElementById("replies-count"),
+  likesCount: document.getElementById("likes-count"),
+  pendingCount: document.getElementById("pending-count"),
   webhookStatus: document.getElementById("webhook-status"),
-  welcomeMessage: document.getElementById("welcome-message"),
-  defaultReply: document.getElementById("default-reply"),
-  recipientSelect: document.getElementById("recipient-id"),
-  keywordsList: document.getElementById("keywords-list"),
-  usersList: document.getElementById("users-list"),
-  conversationsList: document.getElementById("conversations-list"),
+  recommendedField: document.getElementById("recommended-field"),
+  pageIdText: document.getElementById("page-id-text"),
+  lastScanText: document.getElementById("last-scan-text"),
+  replyEnabled: document.getElementById("reply-enabled"),
+  replyMode: document.getElementById("reply-mode"),
+  replyMessage: document.getElementById("reply-message"),
+  replyDelay: document.getElementById("reply-delay"),
+  likeEnabled: document.getElementById("like-enabled"),
+  likeMode: document.getElementById("like-mode"),
+  likeDelay: document.getElementById("like-delay"),
+  commentsList: document.getElementById("comments-list"),
+  activityList: document.getElementById("activity-list"),
   toast: document.getElementById("toast")
 };
 
@@ -54,96 +61,88 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function bindDeleteButtons() {
-  document.querySelectorAll("[data-delete-keyword]").forEach((button) => {
-    button.onclick = async () => {
-      try {
-        const data = await request(`/api/keywords/${button.dataset.deleteKeyword}`, {
-          method: "DELETE"
-        });
-        renderState(data.state);
-        showToast("تم حذف القاعدة");
-      } catch (error) {
-        showToast(error.message, true);
-      }
-    };
-  });
+function formatDate(value) {
+  if (!value) {
+    return "-";
+  }
+  return new Date(value).toLocaleString("ar");
+}
+
+function renderBadge(status) {
+  const labels = {
+    idle: "لم يبدأ",
+    queued: "في الانتظار",
+    done: "تم",
+    failed: "فشل"
+  };
+
+  const label = labels[status] || status || "-";
+  return `<span class="status-badge ${status || "idle"}">${escapeHtml(label)}</span>`;
 }
 
 function renderState(state) {
-  stateElements.statusTitle.textContent = state.enabled ? "البوت يعمل الآن" : "البوت متوقف";
+  stateElements.statusTitle.textContent = state.enabled ? "الأتمتة تعمل الآن" : "الأتمتة متوقفة";
   stateElements.enabledToggle.checked = state.enabled;
-  stateElements.incomingCount.textContent = state.analytics.incomingMessages;
-  stateElements.outgoingCount.textContent = state.analytics.outgoingMessages;
-  stateElements.usersCount.textContent = state.users.length;
+  stateElements.commentsCount.textContent = state.analytics.scannedComments;
+  stateElements.repliesCount.textContent = state.analytics.repliesSent;
+  stateElements.likesCount.textContent = state.analytics.likesSent;
+  stateElements.pendingCount.textContent = state.analytics.pendingActions;
   stateElements.webhookStatus.textContent = state.pageConfigured ? "جاهز" : "ينقصه ضبط";
-  stateElements.welcomeMessage.value = state.welcomeMessage || "";
-  stateElements.defaultReply.value = state.defaultReply || "";
+  stateElements.recommendedField.textContent = state.recommendedWebhookField;
+  stateElements.pageIdText.textContent = state.pageId || "-";
+  stateElements.lastScanText.textContent = formatDate(state.analytics.lastScanAt);
 
-  stateElements.recipientSelect.innerHTML = "";
-  if (!state.users.length) {
-    const option = document.createElement("option");
-    option.textContent = "لا يوجد عملاء بعد";
-    option.value = "";
-    stateElements.recipientSelect.appendChild(option);
-  } else {
-    state.users.forEach((user) => {
-      const option = document.createElement("option");
-      option.value = user.id;
-      option.textContent = `${user.name || "Messenger User"} (${user.id})`;
-      stateElements.recipientSelect.appendChild(option);
-    });
-  }
+  stateElements.replyEnabled.checked = state.automation.reply.enabled;
+  stateElements.replyMode.value = state.automation.reply.mode;
+  stateElements.replyMessage.value = state.automation.reply.message || "";
+  stateElements.replyDelay.value = state.automation.reply.delaySeconds;
+  stateElements.likeEnabled.checked = state.automation.like.enabled;
+  stateElements.likeMode.value = state.automation.like.mode;
+  stateElements.likeDelay.value = state.automation.like.delaySeconds;
 
-  stateElements.keywordsList.innerHTML = state.keywordRules.length
-    ? state.keywordRules
+  stateElements.commentsList.innerHTML = state.comments.length
+    ? state.comments
         .map(
-          (rule) => `
-          <article class="list-item">
-            <div>
-              <strong>${escapeHtml(rule.keyword)}</strong>
-              <p>${escapeHtml(rule.reply)}</p>
+          (comment) => `
+          <article class="comment-card">
+            <div class="comment-header">
+              <div>
+                <strong>${escapeHtml(comment.authorName)}</strong>
+                <p>${escapeHtml(comment.postMessage || "منشور بدون نص")}</p>
+              </div>
+              <span>${formatDate(comment.createdAt)}</span>
             </div>
-            <button type="button" data-delete-keyword="${rule.id}" class="danger-link">حذف</button>
+            <p class="comment-body">${escapeHtml(comment.message || "(تعليق بدون نص)")}</p>
+            <div class="status-row">
+              <div>الرد: ${renderBadge(comment.replyStatus)}</div>
+              <div>الإعجاب: ${renderBadge(comment.likeStatus)}</div>
+            </div>
+            ${
+              comment.replyError || comment.likeError
+                ? `<p class="error-note">${escapeHtml(comment.replyError || comment.likeError)}</p>`
+                : ""
+            }
           </article>
         `
         )
         .join("")
-    : '<p class="empty-text">لا توجد كلمات مفتاحية حتى الآن.</p>';
+    : '<p class="empty-text">لا توجد تعليقات مخزنة بعد.</p>';
 
-  stateElements.usersList.innerHTML = state.users.length
-    ? state.users
-        .map(
-          (user) => `
-          <article class="list-item">
-            <div>
-              <strong>${escapeHtml(user.name || "Messenger User")}</strong>
-              <p>${escapeHtml(user.id)}</p>
-            </div>
-            <span>${new Date(user.lastInteractionAt).toLocaleString("ar")}</span>
-          </article>
-        `
-        )
-        .join("")
-    : '<p class="empty-text">لم يصل أي مستخدم بعد.</p>';
-
-  stateElements.conversationsList.innerHTML = state.conversations.length
-    ? state.conversations
+  stateElements.activityList.innerHTML = state.activity.length
+    ? state.activity
         .map(
           (item) => `
-          <article class="conversation-item ${item.direction}">
+          <article class="conversation-item ${item.kind === "error" ? "system" : "outgoing"}">
             <div class="conversation-meta">
-              <strong>${escapeHtml(item.userName || "System")}</strong>
-              <span>${new Date(item.at).toLocaleString("ar")}</span>
+              <strong>${escapeHtml(item.kind)}</strong>
+              <span>${formatDate(item.at)}</span>
             </div>
-            <p>${escapeHtml(item.text)}</p>
+            <p>${escapeHtml(item.message)}</p>
           </article>
         `
         )
         .join("")
-    : '<p class="empty-text">لا توجد محادثات محفوظة حتى الآن.</p>';
-
-  bindDeleteButtons();
+    : '<p class="empty-text">لا توجد عمليات مسجلة بعد.</p>';
 }
 
 async function refreshState() {
@@ -163,75 +162,44 @@ document.getElementById("enabled-toggle").addEventListener("change", async (even
       body: JSON.stringify({ enabled: event.target.checked })
     });
     renderState(data.state);
-    showToast(event.target.checked ? "تم تشغيل البوت" : "تم إيقاف البوت");
+    showToast(event.target.checked ? "تم تشغيل الأتمتة" : "تم إيقاف الأتمتة");
   } catch (error) {
     showToast(error.message, true);
   }
 });
 
-document.getElementById("settings-form").addEventListener("submit", async (event) => {
+document.getElementById("automation-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const payload = Object.fromEntries(new FormData(event.target).entries());
+
+  const payload = {
+    replyEnabled: stateElements.replyEnabled.checked,
+    replyMode: stateElements.replyMode.value,
+    replyMessage: stateElements.replyMessage.value,
+    replyDelaySeconds: Number(stateElements.replyDelay.value || 0),
+    likeEnabled: stateElements.likeEnabled.checked,
+    likeMode: stateElements.likeMode.value,
+    likeDelaySeconds: Number(stateElements.likeDelay.value || 0)
+  };
 
   try {
-    const data = await request("/api/settings", {
+    const data = await request("/api/automation", {
       method: "POST",
       body: JSON.stringify(payload)
     });
     renderState(data.state);
-    showToast("تم حفظ الإعدادات");
+    showToast("تم حفظ إعدادات الرد والإعجاب");
   } catch (error) {
     showToast(error.message, true);
   }
 });
 
-document.getElementById("keyword-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const form = event.target;
-  const payload = Object.fromEntries(new FormData(form).entries());
-
+document.getElementById("scan-btn").addEventListener("click", async () => {
   try {
-    const data = await request("/api/keywords", {
-      method: "POST",
-      body: JSON.stringify(payload)
-    });
-    form.reset();
-    renderState(data.state);
-    showToast("تمت إضافة القاعدة");
-  } catch (error) {
-    showToast(error.message, true);
-  }
-});
-
-document.getElementById("message-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const form = event.target;
-  const payload = Object.fromEntries(new FormData(form).entries());
-
-  try {
-    const data = await request("/api/message", {
-      method: "POST",
-      body: JSON.stringify(payload)
-    });
-    form.reset();
-    renderState(data.state);
-    showToast("تم إرسال الرسالة");
-  } catch (error) {
-    showToast(error.message, true);
-  }
-});
-
-document.getElementById("broadcast-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const payload = Object.fromEntries(new FormData(event.target).entries());
-
-  try {
-    const data = await request("/api/broadcast", {
-      method: "POST",
-      body: JSON.stringify(payload)
+    const data = await request("/api/scan", {
+      method: "POST"
     });
     renderState(data.state);
-    showToast(`تم الإرسال إلى ${data.sent} مستخدم`);
+    showToast("تم تنفيذ فحص جديد للتعليقات");
   } catch (error) {
     showToast(error.message, true);
   }
@@ -243,4 +211,4 @@ refreshState().catch((error) => {
 
 setInterval(() => {
   refreshState().catch(() => {});
-}, 20000);
+}, 15000);

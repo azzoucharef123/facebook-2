@@ -26,37 +26,66 @@ const sessionSecret =
   crypto.createHash("sha256").update(`${dashboardPassword}:${verifyToken}`).digest("hex");
 const sessionMaxAgeMs = 1000 * 60 * 60 * 12;
 const loginAttempts = new Map();
+const postsLimit = Math.max(1, Number(process.env.POSTS_LIMIT || 8));
+const topCommentsLimit = Math.max(1, Number(process.env.TOP_COMMENTS_LIMIT || 40));
+const replyCommentsLimit = Math.max(1, Number(process.env.REPLY_COMMENTS_LIMIT || 20));
+const scanIntervalMs = Math.max(10000, Number(process.env.SCAN_INTERVAL_MS || 30000));
+const postWindowDays = Math.max(1, Number(process.env.POST_WINDOW_DAYS || 14));
 
-const initialState = {
-  enabled: true,
-  pageId,
-  defaultReply:
-    "شكرا لتواصلك معنا. تم استلام رسالتك وسنعود إليك في أقرب وقت ممكن.",
-  welcomeMessage:
-    "أهلا بك. هذا رد تلقائي من البوت. اكتب كلمة مثل السعر أو الدعم للحصول على رد سريع.",
-  keywordRules: [
-    {
-      id: crypto.randomUUID(),
-      keyword: "السعر",
-      reply: "للحصول على الأسعار الحالية ارسل اسم المنتج أو الخدمة المطلوبة وسنرسلها لك مباشرة."
-    },
-    {
-      id: crypto.randomUUID(),
-      keyword: "الدعم",
-      reply: "فريق الدعم متاح الآن. اكتب مشكلتك بالتفصيل وسنساعدك بسرعة."
-    }
-  ],
-  users: [],
-  conversations: [],
-  analytics: {
-    incomingMessages: 0,
-    outgoingMessages: 0,
-    lastIncomingAt: null,
-    lastOutgoingAt: null
-  },
-  createdAt: new Date().toISOString(),
-  updatedAt: new Date().toISOString()
+const runtime = {
+  scanning: false,
+  queuedScan: false,
+  processing: false
 };
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function createInitialState() {
+  const now = nowIso();
+  return {
+    enabled: true,
+    pageId,
+    automation: {
+      reply: {
+        enabled: true,
+        mode: "new",
+        modeChangedAt: now,
+        message: "شكرا على تعليقك. سنراجع طلبك ونرد عليك بالتفصيل قريبا.",
+        delaySeconds: 25,
+        lastProcessedAt: null
+      },
+      like: {
+        enabled: true,
+        mode: "new",
+        modeChangedAt: now,
+        delaySeconds: 10,
+        lastProcessedAt: null
+      }
+    },
+    analytics: {
+      scannedComments: 0,
+      repliesSent: 0,
+      likesSent: 0,
+      replyErrors: 0,
+      likeErrors: 0,
+      lastScanAt: null,
+      lastActionAt: null,
+      lastErrorAt: null
+    },
+    posts: [],
+    comments: [],
+    actions: [],
+    processed: {
+      repliedCommentIds: [],
+      likedCommentIds: []
+    },
+    activity: [],
+    createdAt: now,
+    updatedAt: now
+  };
+}
 
 function ensureDataDir() {
   fs.mkdirSync(dataDir, { recursive: true });
@@ -66,7 +95,7 @@ function writeState(nextState) {
   ensureDataDir();
   const payload = {
     ...nextState,
-    updatedAt: new Date().toISOString()
+    updatedAt: nowIso()
   };
   fs.writeFileSync(stateFile, JSON.stringify(payload, null, 2), "utf8");
   return payload;
@@ -74,49 +103,79 @@ function writeState(nextState) {
 
 function readState() {
   ensureDataDir();
+  const defaults = createInitialState();
 
   if (!fs.existsSync(stateFile)) {
-    writeState(initialState);
-    return structuredClone(initialState);
+    writeState(defaults);
+    return structuredClone(defaults);
   }
 
   try {
-    const raw = fs.readFileSync(stateFile, "utf8");
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
     return {
-      ...structuredClone(initialState),
+      ...structuredClone(defaults),
       ...parsed,
+      automation: {
+        reply: {
+          ...defaults.automation.reply,
+          ...(parsed.automation?.reply || {})
+        },
+        like: {
+          ...defaults.automation.like,
+          ...(parsed.automation?.like || {})
+        }
+      },
       analytics: {
-        ...initialState.analytics,
+        ...defaults.analytics,
         ...(parsed.analytics || {})
       },
-      keywordRules: Array.isArray(parsed.keywordRules) ? parsed.keywordRules : initialState.keywordRules,
-      users: Array.isArray(parsed.users) ? parsed.users : [],
-      conversations: Array.isArray(parsed.conversations) ? parsed.conversations : []
+      posts: Array.isArray(parsed.posts) ? parsed.posts : [],
+      comments: Array.isArray(parsed.comments) ? parsed.comments : [],
+      actions: Array.isArray(parsed.actions) ? parsed.actions : [],
+      processed: {
+        repliedCommentIds: Array.isArray(parsed.processed?.repliedCommentIds)
+          ? parsed.processed.repliedCommentIds
+          : [],
+        likedCommentIds: Array.isArray(parsed.processed?.likedCommentIds)
+          ? parsed.processed.likedCommentIds
+          : []
+      },
+      activity: Array.isArray(parsed.activity) ? parsed.activity : []
     };
   } catch (error) {
     console.error("Failed to read bot state:", error.message);
-    writeState(initialState);
-    return structuredClone(initialState);
+    writeState(defaults);
+    return structuredClone(defaults);
   }
 }
 
 function sanitizeState(state) {
+  const pendingActions = state.actions.filter((action) => action.status === "pending").length;
   return {
     enabled: state.enabled,
     pageId: state.pageId,
-    defaultReply: state.defaultReply,
-    welcomeMessage: state.welcomeMessage,
-    keywordRules: state.keywordRules,
-    users: state.users.slice(0, 100),
-    conversations: state.conversations.slice(0, 120),
-    analytics: state.analytics,
-    createdAt: state.createdAt,
-    updatedAt: state.updatedAt,
+    automation: state.automation,
+    analytics: {
+      scannedComments: state.analytics.scannedComments,
+      repliesSent: state.analytics.repliesSent,
+      likesSent: state.analytics.likesSent,
+      replyErrors: state.analytics.replyErrors,
+      likeErrors: state.analytics.likeErrors,
+      lastScanAt: state.analytics.lastScanAt,
+      lastActionAt: state.analytics.lastActionAt,
+      lastErrorAt: state.analytics.lastErrorAt,
+      pendingActions
+    },
+    posts: state.posts.slice(0, 8),
+    comments: state.comments.slice(0, 120),
+    activity: state.activity.slice(0, 80),
     appUrl,
     webhookUrl: appUrl ? `${appUrl}/webhook` : "",
     verifyTokenConfigured: Boolean(verifyToken),
-    pageConfigured: Boolean(pageAccessToken && pageId)
+    pageConfigured: Boolean(pageAccessToken && pageId),
+    recommendedWebhookField: "feed",
+    createdAt: state.createdAt,
+    updatedAt: state.updatedAt
   };
 }
 
@@ -166,8 +225,8 @@ function authRequired(req, res, next) {
   return next();
 }
 
-function normalizeMessageText(text) {
-  return String(text || "").trim();
+function normalizeText(value) {
+  return String(value || "").trim();
 }
 
 function escapeHtml(value) {
@@ -179,125 +238,17 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function upsertUser(state, userPatch) {
-  const existingIndex = state.users.findIndex((user) => user.id === userPatch.id);
-
-  if (existingIndex === -1) {
-    state.users.unshift({
-      id: userPatch.id,
-      name: userPatch.name || "Messenger User",
-      firstName: userPatch.firstName || "",
-      lastName: userPatch.lastName || "",
-      profilePic: userPatch.profilePic || "",
-      lastInteractionAt: userPatch.lastInteractionAt || new Date().toISOString(),
-      lastMessagePreview: userPatch.lastMessagePreview || "",
-      welcomedAt: userPatch.welcomedAt || null
-    });
-  } else {
-    state.users[existingIndex] = {
-      ...state.users[existingIndex],
-      ...userPatch,
-      lastInteractionAt: userPatch.lastInteractionAt || new Date().toISOString()
-    };
-  }
-
-  state.users = state.users
-    .sort((a, b) => new Date(b.lastInteractionAt).getTime() - new Date(a.lastInteractionAt).getTime())
-    .slice(0, 300);
+function toPositiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
-function addConversation(state, entry) {
-  state.conversations.unshift({
-    id: crypto.randomUUID(),
-    at: new Date().toISOString(),
-    ...entry
-  });
-  state.conversations = state.conversations.slice(0, 500);
-}
-
-async function fetchFacebookProfile(psid) {
-  if (!pageAccessToken) {
-    return null;
+function shrinkText(value, maxLength = 140) {
+  const text = normalizeText(value);
+  if (text.length <= maxLength) {
+    return text;
   }
-
-  try {
-    const response = await fetch(
-      `https://graph.facebook.com/${encodeURIComponent(psid)}?fields=first_name,last_name,profile_pic&access_token=${encodeURIComponent(pageAccessToken)}`
-    );
-
-    if (!response.ok) {
-      return null;
-    }
-
-    return await response.json();
-  } catch (error) {
-    console.error("Profile fetch failed:", error.message);
-    return null;
-  }
-}
-
-async function sendFacebookMessage(recipientId, messageText) {
-  const text = normalizeMessageText(messageText);
-
-  if (!pageAccessToken) {
-    throw new Error("PAGE_ACCESS_TOKEN is missing");
-  }
-
-  if (!text) {
-    throw new Error("Message text is empty");
-  }
-
-  const response = await fetch(
-    `https://graph.facebook.com/v22.0/me/messages?access_token=${encodeURIComponent(pageAccessToken)}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        recipient: { id: recipientId },
-        messaging_type: "RESPONSE",
-        message: { text }
-      })
-    }
-  );
-
-  const payload = await response.json().catch(() => ({}));
-
-  if (!response.ok || payload.error) {
-    throw new Error(payload.error?.message || "Facebook API request failed");
-  }
-
-  return payload;
-}
-
-function findKeywordReply(state, text) {
-  const normalized = normalizeMessageText(text).toLowerCase();
-
-  if (!normalized) {
-    return "";
-  }
-
-  const match = state.keywordRules.find((rule) =>
-    normalized.includes(String(rule.keyword || "").trim().toLowerCase())
-  );
-
-  return match ? normalizeMessageText(match.reply) : "";
-}
-
-function recordOutgoing(state) {
-  state.analytics.outgoingMessages += 1;
-  state.analytics.lastOutgoingAt = new Date().toISOString();
-}
-
-function recordIncoming(state) {
-  state.analytics.incomingMessages += 1;
-  state.analytics.lastIncomingAt = new Date().toISOString();
-}
-
-function getRecentActiveUsers(state, hours = 24) {
-  const cutoff = Date.now() - hours * 60 * 60 * 1000;
-  return state.users.filter((user) => new Date(user.lastInteractionAt).getTime() >= cutoff);
+  return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
 }
 
 function tooManyAttempts(ipAddress) {
@@ -313,6 +264,459 @@ function addAttempt(ipAddress) {
   loginAttempts.set(ipAddress, attempts);
 }
 
+function capArray(items, maxLength) {
+  return items.slice(0, maxLength);
+}
+
+function addActivity(state, kind, message) {
+  state.activity.unshift({
+    id: crypto.randomUUID(),
+    at: nowIso(),
+    kind,
+    message
+  });
+  state.activity = capArray(state.activity, 300);
+}
+
+function sortCommentsNewestFirst(comments) {
+  return [...comments].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+function sortActionsOldestFirst(actions) {
+  return [...actions].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+}
+
+function isOwnComment(comment) {
+  return String(comment.authorId || "") === String(pageId || "");
+}
+
+function ensureProcessedId(list, commentId) {
+  if (!list.includes(commentId)) {
+    list.unshift(commentId);
+  }
+  return capArray(list, 5000);
+}
+
+function findAction(state, type, commentId) {
+  return state.actions.find((action) => action.type === type && action.commentId === commentId);
+}
+
+function updateCommentStatus(state, commentId, type, patch) {
+  const index = state.comments.findIndex((comment) => comment.id === commentId);
+  if (index === -1) {
+    return;
+  }
+
+  const key = type === "reply" ? "replyStatus" : "likeStatus";
+  const timeKey = type === "reply" ? "lastReplyAt" : "lastLikeAt";
+  const errorKey = type === "reply" ? "replyError" : "likeError";
+
+  state.comments[index] = {
+    ...state.comments[index],
+    ...(patch[key] ? { [key]: patch[key] } : {}),
+    ...(patch[timeKey] ? { [timeKey]: patch[timeKey] } : {}),
+    ...(Object.prototype.hasOwnProperty.call(patch, errorKey) ? { [errorKey]: patch[errorKey] } : {})
+  };
+}
+
+function normalizePost(rawPost) {
+  return {
+    id: rawPost.id,
+    message: shrinkText(rawPost.message || "منشور بدون نص", 160),
+    createdAt: rawPost.created_time || nowIso(),
+    permalinkUrl: rawPost.permalink_url || ""
+  };
+}
+
+function normalizeComment(rawComment, post, parentId = null) {
+  return {
+    id: rawComment.id,
+    postId: post.id,
+    postMessage: post.message,
+    parentId: rawComment.parent?.id || parentId || null,
+    message: normalizeText(rawComment.message),
+    authorName: rawComment.from?.name || "Unknown user",
+    authorId: rawComment.from?.id || "",
+    createdAt: rawComment.created_time || nowIso(),
+    permalinkUrl: rawComment.permalink_url || post.permalinkUrl || "",
+    likeCount: Number(rawComment.like_count || 0),
+    replyStatus: "idle",
+    likeStatus: "idle",
+    lastReplyAt: null,
+    lastLikeAt: null,
+    replyError: "",
+    likeError: ""
+  };
+}
+
+function mergeComment(existingComment, incomingComment) {
+  return {
+    ...incomingComment,
+    replyStatus: existingComment?.replyStatus || "idle",
+    likeStatus: existingComment?.likeStatus || "idle",
+    lastReplyAt: existingComment?.lastReplyAt || null,
+    lastLikeAt: existingComment?.lastLikeAt || null,
+    replyError: existingComment?.replyError || "",
+    likeError: existingComment?.likeError || ""
+  };
+}
+
+function shouldProcessComment(comment, actionConfig, state) {
+  if (!comment.message || isOwnComment(comment)) {
+    return false;
+  }
+
+  if (actionConfig.mode === "all") {
+    return true;
+  }
+
+  const anchor = new Date(actionConfig.modeChangedAt || state.createdAt).getTime();
+  return new Date(comment.createdAt).getTime() >= anchor;
+}
+
+function queueAction(state, type, comment) {
+  const existing = findAction(state, type, comment.id);
+
+  if (existing) {
+    if (existing.status === "failed" || existing.status === "cancelled") {
+      existing.status = "pending";
+      existing.error = "";
+      existing.createdAt = nowIso();
+      updateCommentStatus(state, comment.id, type, {
+        [type === "reply" ? "replyStatus" : "likeStatus"]: "queued",
+        [type === "reply" ? "replyError" : "likeError"]: ""
+      });
+    }
+    return;
+  }
+
+  state.actions.unshift({
+    id: crypto.randomUUID(),
+    type,
+    commentId: comment.id,
+    status: "pending",
+    createdAt: nowIso(),
+    processedAt: null,
+    error: ""
+  });
+
+  updateCommentStatus(state, comment.id, type, {
+    [type === "reply" ? "replyStatus" : "likeStatus"]: "queued",
+    [type === "reply" ? "replyError" : "likeError"]: ""
+  });
+}
+
+function syncCommentStatusWithProcessed(state) {
+  state.comments = state.comments.map((comment) => {
+    const replyDone = state.processed.repliedCommentIds.includes(comment.id);
+    const likeDone = state.processed.likedCommentIds.includes(comment.id);
+    return {
+      ...comment,
+      replyStatus: replyDone && comment.replyStatus !== "failed" ? "done" : comment.replyStatus,
+      likeStatus: likeDone && comment.likeStatus !== "failed" ? "done" : comment.likeStatus
+    };
+  });
+}
+
+async function graphRequest(nodePath, options = {}) {
+  if (!pageAccessToken) {
+    throw new Error("PAGE_ACCESS_TOKEN is missing");
+  }
+
+  const method = options.method || "GET";
+  const url = new URL(`https://graph.facebook.com/v22.0/${String(nodePath).replace(/^\/+/, "")}`);
+  url.searchParams.set("access_token", pageAccessToken);
+
+  for (const [key, value] of Object.entries(options.query || {})) {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  }
+
+  const requestOptions = { method };
+
+  if (method !== "GET") {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(options.form || {})) {
+      if (value !== undefined && value !== null && value !== "") {
+        params.set(key, String(value));
+      }
+    }
+    requestOptions.headers = {
+      "Content-Type": "application/x-www-form-urlencoded"
+    };
+    requestOptions.body = params.toString();
+  }
+
+  const response = await fetch(url, requestOptions);
+  const payload = await response.json().catch(() => ({}));
+
+  if (!response.ok || payload.error) {
+    throw new Error(payload.error?.message || `Graph API request failed for ${nodePath}`);
+  }
+
+  return payload;
+}
+
+async function fetchPagePosts() {
+  const payload = await graphRequest(`${pageId}/posts`, {
+    query: {
+      fields: "id,message,created_time,permalink_url",
+      limit: postsLimit
+    }
+  });
+
+  const cutoff = Date.now() - postWindowDays * 24 * 60 * 60 * 1000;
+  return (payload.data || [])
+    .map(normalizePost)
+    .filter((post) => new Date(post.createdAt).getTime() >= cutoff);
+}
+
+async function fetchCommentsForNode(targetId, post, parentId = null, limit = topCommentsLimit) {
+  const payload = await graphRequest(`${targetId}/comments`, {
+    query: {
+      fields: "id,message,created_time,permalink_url,from{id,name},comment_count,parent{id},like_count",
+      filter: "stream",
+      limit
+    }
+  });
+
+  const output = [];
+
+  for (const rawComment of payload.data || []) {
+    const comment = normalizeComment(rawComment, post, parentId);
+    output.push(comment);
+
+    if (!parentId && Number(rawComment.comment_count || 0) > 0) {
+      const nested = await fetchCommentsForNode(rawComment.id, post, rawComment.id, replyCommentsLimit);
+      output.push(...nested);
+    }
+  }
+
+  return output;
+}
+
+async function scanComments(reason) {
+  const state = readState();
+  state.analytics.lastScanAt = nowIso();
+
+  if (!state.enabled) {
+    addActivity(state, "scan", "تم تجاهل الفحص لأن الأتمتة متوقفة.");
+    writeState(state);
+    return sanitizeState(state);
+  }
+
+  if (!pageAccessToken || !pageId) {
+    addActivity(state, "error", "بيانات الصفحة أو التوكن غير مضبوطة.");
+    state.analytics.lastErrorAt = nowIso();
+    writeState(state);
+    return sanitizeState(state);
+  }
+
+  try {
+    const posts = await fetchPagePosts();
+    const commentMap = new Map(state.comments.map((comment) => [comment.id, comment]));
+    const discoveredComments = [];
+
+    for (const post of posts) {
+      const comments = await fetchCommentsForNode(post.id, post);
+      for (const comment of comments) {
+        const merged = mergeComment(commentMap.get(comment.id), comment);
+        commentMap.set(comment.id, merged);
+        discoveredComments.push(merged);
+      }
+    }
+
+    state.posts = posts;
+    state.comments = sortCommentsNewestFirst(Array.from(commentMap.values()));
+    state.comments = capArray(state.comments, 400);
+    state.analytics.scannedComments = state.comments.length;
+
+    const commentsForQueue = [...discoveredComments].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+
+    for (const comment of commentsForQueue) {
+      if (
+        state.automation.reply.enabled &&
+        shouldProcessComment(comment, state.automation.reply, state) &&
+        !state.processed.repliedCommentIds.includes(comment.id)
+      ) {
+        queueAction(state, "reply", comment);
+      }
+
+      if (
+        state.automation.like.enabled &&
+        shouldProcessComment(comment, state.automation.like, state) &&
+        !state.processed.likedCommentIds.includes(comment.id)
+      ) {
+        queueAction(state, "like", comment);
+      }
+    }
+
+    syncCommentStatusWithProcessed(state);
+    addActivity(
+      state,
+      "scan",
+      `تم فحص التعليقات (${reason}) واكتشاف ${discoveredComments.length} تعليق/رد من ${posts.length} منشور.`
+    );
+    writeState(state);
+    return sanitizeState(state);
+  } catch (error) {
+    state.analytics.lastErrorAt = nowIso();
+    addActivity(state, "error", `فشل فحص التعليقات: ${error.message}`);
+    writeState(state);
+    throw error;
+  }
+}
+
+async function sendCommentReply(commentId, message) {
+  return graphRequest(`${commentId}/comments`, {
+    method: "POST",
+    form: {
+      message
+    }
+  });
+}
+
+async function sendCommentLike(commentId) {
+  return graphRequest(`${commentId}/likes`, {
+    method: "POST"
+  });
+}
+
+function actionDelayMs(config) {
+  return Math.max(0, Number(config.delaySeconds || 0) * 1000);
+}
+
+async function processPendingActions() {
+  if (runtime.processing) {
+    return;
+  }
+
+  runtime.processing = true;
+
+  try {
+    const state = readState();
+    let changed = false;
+
+    if (!state.enabled) {
+      return;
+    }
+
+    const pending = sortActionsOldestFirst(state.actions.filter((action) => action.status === "pending"));
+
+    if (!pending.length) {
+      return;
+    }
+
+    for (const action of pending) {
+      const config = action.type === "reply" ? state.automation.reply : state.automation.like;
+      const lastProcessedAt = config.lastProcessedAt ? new Date(config.lastProcessedAt).getTime() : 0;
+      const delay = actionDelayMs(config);
+
+      if (Date.now() < lastProcessedAt + delay) {
+        continue;
+      }
+
+      const comment = state.comments.find((item) => item.id === action.commentId);
+
+      if (!comment) {
+        action.status = "cancelled";
+        action.processedAt = nowIso();
+        changed = true;
+        continue;
+      }
+
+      try {
+        if (action.type === "reply") {
+          await sendCommentReply(comment.id, state.automation.reply.message);
+          action.status = "done";
+          action.processedAt = nowIso();
+          config.lastProcessedAt = action.processedAt;
+          state.analytics.repliesSent += 1;
+          state.analytics.lastActionAt = action.processedAt;
+          state.processed.repliedCommentIds = ensureProcessedId(state.processed.repliedCommentIds, comment.id);
+          updateCommentStatus(state, comment.id, "reply", {
+            replyStatus: "done",
+            lastReplyAt: action.processedAt,
+            replyError: ""
+          });
+          addActivity(state, "reply", `تم الرد على تعليق ${shrinkText(comment.message, 60)}`);
+        } else {
+          await sendCommentLike(comment.id);
+          action.status = "done";
+          action.processedAt = nowIso();
+          config.lastProcessedAt = action.processedAt;
+          state.analytics.likesSent += 1;
+          state.analytics.lastActionAt = action.processedAt;
+          state.processed.likedCommentIds = ensureProcessedId(state.processed.likedCommentIds, comment.id);
+          updateCommentStatus(state, comment.id, "like", {
+            likeStatus: "done",
+            lastLikeAt: action.processedAt,
+            likeError: ""
+          });
+          addActivity(state, "like", `تم الإعجاب بتعليق ${shrinkText(comment.message, 60)}`);
+        }
+        changed = true;
+      } catch (error) {
+        action.status = "failed";
+        action.error = error.message;
+        action.processedAt = nowIso();
+        state.analytics.lastErrorAt = action.processedAt;
+
+        if (action.type === "reply") {
+          state.analytics.replyErrors += 1;
+          updateCommentStatus(state, comment.id, "reply", {
+            replyStatus: "failed",
+            replyError: error.message
+          });
+          addActivity(state, "error", `فشل الرد على تعليق: ${error.message}`);
+        } else {
+          state.analytics.likeErrors += 1;
+          updateCommentStatus(state, comment.id, "like", {
+            likeStatus: "failed",
+            likeError: error.message
+          });
+          addActivity(state, "error", `فشل الإعجاب بتعليق: ${error.message}`);
+        }
+        changed = true;
+      }
+
+      writeState(state);
+      return;
+    }
+
+    if (changed) {
+      writeState(state);
+    }
+  } finally {
+    runtime.processing = false;
+  }
+}
+
+async function requestScan(reason = "manual") {
+  if (runtime.scanning) {
+    runtime.queuedScan = true;
+    return;
+  }
+
+  runtime.scanning = true;
+
+  try {
+    await scanComments(reason);
+  } catch (error) {
+    console.error("Comment scan failed:", error.message);
+  } finally {
+    runtime.scanning = false;
+  }
+
+  if (runtime.queuedScan) {
+    runtime.queuedScan = false;
+    await requestScan("queued");
+  }
+}
+
 app.use(
   helmet({
     contentSecurityPolicy: false
@@ -325,12 +729,14 @@ app.use(cookieParser());
 app.use("/public", express.static(path.join(process.cwd(), "public")));
 
 app.get("/health", (req, res) => {
+  const state = readState();
   res.json({
     ok: true,
-    service: "railway-facebook-bot-dashboard",
+    service: "facebook-comment-automation-dashboard",
     uptime: process.uptime(),
-    time: new Date().toISOString(),
-    pageConfigured: Boolean(pageAccessToken && pageId)
+    time: nowIso(),
+    pageConfigured: Boolean(pageAccessToken && pageId),
+    pendingActions: state.actions.filter((action) => action.status === "pending").length
   });
 });
 
@@ -346,93 +752,16 @@ app.get("/webhook", (req, res) => {
   return res.status(403).send("Verification failed");
 });
 
-app.post("/webhook", async (req, res) => {
-  const body = req.body;
-
-  if (body.object !== "page") {
+app.post("/webhook", (req, res) => {
+  if (req.body.object !== "page") {
     return res.status(404).send("Unsupported object");
   }
 
-  const state = readState();
-
-  for (const entry of body.entry || []) {
-    for (const event of entry.messaging || []) {
-      const senderId = event.sender?.id;
-
-      if (!senderId) {
-        continue;
-      }
-
-      const messageText = normalizeMessageText(event.message?.text || event.postback?.title || "");
-      const profile = await fetchFacebookProfile(senderId);
-      const userName =
-        [profile?.first_name, profile?.last_name].filter(Boolean).join(" ").trim() || "Messenger User";
-
-      recordIncoming(state);
-      upsertUser(state, {
-        id: senderId,
-        name: userName,
-        firstName: profile?.first_name || "",
-        lastName: profile?.last_name || "",
-        profilePic: profile?.profile_pic || "",
-        lastInteractionAt: new Date().toISOString(),
-        lastMessagePreview: messageText
-      });
-
-      addConversation(state, {
-        direction: "incoming",
-        userId: senderId,
-        userName,
-        text: messageText || "[non-text event]"
-      });
-
-      if (!state.enabled) {
-        continue;
-      }
-
-      const knownUser = state.users.find((user) => user.id === senderId);
-      const welcomeNeeded = knownUser && !knownUser.welcomedAt && state.welcomeMessage;
-
-      try {
-        if (welcomeNeeded) {
-          await sendFacebookMessage(senderId, state.welcomeMessage);
-          recordOutgoing(state);
-          addConversation(state, {
-            direction: "outgoing",
-            userId: senderId,
-            userName,
-            text: state.welcomeMessage
-          });
-          upsertUser(state, {
-            id: senderId,
-            welcomedAt: new Date().toISOString()
-          });
-        }
-
-        const reply = findKeywordReply(state, messageText) || state.defaultReply;
-        if (reply) {
-          await sendFacebookMessage(senderId, reply);
-          recordOutgoing(state);
-          addConversation(state, {
-            direction: "outgoing",
-            userId: senderId,
-            userName,
-            text: reply
-          });
-        }
-      } catch (error) {
-        addConversation(state, {
-          direction: "system",
-          userId: senderId,
-          userName,
-          text: `Send failed: ${error.message}`
-        });
-      }
-    }
-  }
-
-  writeState(state);
-  return res.status(200).send("EVENT_RECEIVED");
+  res.status(200).send("EVENT_RECEIVED");
+  requestScan("webhook").catch((error) => {
+    console.error("Webhook-triggered scan failed:", error.message);
+  });
+  return undefined;
 });
 
 app.get("/", (req, res) => {
@@ -476,112 +805,46 @@ app.get("/api/state", authRequired, (req, res) => {
 app.post("/api/toggle", authRequired, (req, res) => {
   const state = readState();
   state.enabled = Boolean(req.body.enabled);
+  addActivity(state, "toggle", state.enabled ? "تم تشغيل الأتمتة العامة." : "تم إيقاف الأتمتة العامة.");
   writeState(state);
   res.json({ ok: true, state: sanitizeState(state) });
 });
 
-app.post("/api/settings", authRequired, (req, res) => {
+app.post("/api/automation", authRequired, async (req, res) => {
   const state = readState();
-  state.defaultReply = normalizeMessageText(req.body.defaultReply);
-  state.welcomeMessage = normalizeMessageText(req.body.welcomeMessage);
+  const now = nowIso();
+  const nextReplyMode = req.body.replyMode === "all" ? "all" : "new";
+  const nextLikeMode = req.body.likeMode === "all" ? "all" : "new";
+  const replyMessage = normalizeText(req.body.replyMessage);
+
+  if (Boolean(req.body.replyEnabled) && !replyMessage) {
+    return res.status(400).json({ ok: false, error: "Reply message is required when reply automation is enabled" });
+  }
+
+  state.automation.reply.enabled = Boolean(req.body.replyEnabled);
+  state.automation.reply.message = replyMessage;
+  state.automation.reply.delaySeconds = toPositiveNumber(req.body.replyDelaySeconds, 25);
+  if (state.automation.reply.mode !== nextReplyMode) {
+    state.automation.reply.modeChangedAt = now;
+  }
+  state.automation.reply.mode = nextReplyMode;
+
+  state.automation.like.enabled = Boolean(req.body.likeEnabled);
+  state.automation.like.delaySeconds = toPositiveNumber(req.body.likeDelaySeconds, 10);
+  if (state.automation.like.mode !== nextLikeMode) {
+    state.automation.like.modeChangedAt = now;
+  }
+  state.automation.like.mode = nextLikeMode;
+
+  addActivity(state, "settings", "تم تحديث إعدادات الرد والإعجاب على التعليقات.");
   writeState(state);
-  res.json({ ok: true, state: sanitizeState(state) });
+  await requestScan("settings-save");
+  return res.json({ ok: true, state: sanitizeState(readState()) });
 });
 
-app.post("/api/keywords", authRequired, (req, res) => {
-  const state = readState();
-  const keyword = normalizeMessageText(req.body.keyword);
-  const reply = normalizeMessageText(req.body.reply);
-
-  if (!keyword || !reply) {
-    return res.status(400).json({ ok: false, error: "Keyword and reply are required" });
-  }
-
-  state.keywordRules.unshift({
-    id: crypto.randomUUID(),
-    keyword,
-    reply
-  });
-  state.keywordRules = state.keywordRules.slice(0, 100);
-  writeState(state);
-
-  return res.json({ ok: true, state: sanitizeState(state) });
-});
-
-app.delete("/api/keywords/:id", authRequired, (req, res) => {
-  const state = readState();
-  state.keywordRules = state.keywordRules.filter((rule) => rule.id !== req.params.id);
-  writeState(state);
-  res.json({ ok: true, state: sanitizeState(state) });
-});
-
-app.post("/api/message", authRequired, async (req, res) => {
-  const recipientId = normalizeMessageText(req.body.recipientId);
-  const message = normalizeMessageText(req.body.message);
-
-  if (!recipientId || !message) {
-    return res.status(400).json({ ok: false, error: "Recipient and message are required" });
-  }
-
-  const state = readState();
-  const recipient = state.users.find((user) => user.id === recipientId);
-
-  try {
-    await sendFacebookMessage(recipientId, message);
-    recordOutgoing(state);
-    addConversation(state, {
-      direction: "outgoing",
-      userId: recipientId,
-      userName: recipient?.name || "Messenger User",
-      text: message
-    });
-    writeState(state);
-    return res.json({ ok: true, state: sanitizeState(state) });
-  } catch (error) {
-    return res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
-app.post("/api/broadcast", authRequired, async (req, res) => {
-  const message = normalizeMessageText(req.body.message);
-
-  if (!message) {
-    return res.status(400).json({ ok: false, error: "Message is required" });
-  }
-
-  const state = readState();
-  const targets = getRecentActiveUsers(state, 24);
-
-  if (!targets.length) {
-    return res.status(400).json({ ok: false, error: "No active users in the last 24 hours" });
-  }
-
-  const results = [];
-
-  for (const user of targets) {
-    try {
-      await sendFacebookMessage(user.id, message);
-      recordOutgoing(state);
-      addConversation(state, {
-        direction: "outgoing",
-        userId: user.id,
-        userName: user.name,
-        text: `[Broadcast] ${message}`
-      });
-      results.push({ userId: user.id, ok: true });
-    } catch (error) {
-      results.push({ userId: user.id, ok: false, error: error.message });
-    }
-  }
-
-  writeState(state);
-  return res.json({
-    ok: true,
-    sent: results.filter((item) => item.ok).length,
-    failed: results.filter((item) => !item.ok).length,
-    results,
-    state: sanitizeState(state)
-  });
+app.post("/api/scan", authRequired, async (req, res) => {
+  await requestScan("manual");
+  return res.json({ ok: true, state: sanitizeState(readState()) });
 });
 
 app.get("/setup", authRequired, (req, res) => {
@@ -590,13 +853,13 @@ app.get("/setup", authRequired, (req, res) => {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Facebook Bot Setup</title>
+    <title>Facebook Comment Automation Setup</title>
     <link rel="stylesheet" href="/public/styles.css" />
   </head>
   <body class="setup-body">
     <main class="setup-card">
-      <h1>إعداد Facebook Webhook</h1>
-      <p>ضع هذه القيم داخل إعدادات التطبيق في Meta Developers.</p>
+      <h1>إعداد متابعة التعليقات</h1>
+      <p>استخدم Webhook لإشعار التطبيق بوجود نشاط جديد، والتطبيق سيقوم بالفحص والرد والإعجاب حسب إعداداتك.</p>
       <div class="setup-grid">
         <div class="setup-item">
           <strong>Webhook URL</strong>
@@ -607,10 +870,15 @@ app.get("/setup", authRequired, (req, res) => {
           <code>${escapeHtml(verifyToken)}</code>
         </div>
         <div class="setup-item">
+          <strong>Webhook Field</strong>
+          <code>feed</code>
+        </div>
+        <div class="setup-item">
           <strong>Page ID</strong>
           <code>${escapeHtml(pageId || "غير مضبوط")}</code>
         </div>
       </div>
+      <p class="status-text">مهم: التوكن يجب أن يسمح بإدارة المنشورات والتعليقات والإعجابات على الصفحة.</p>
       <a class="back-link" href="/">العودة إلى لوحة التحكم</a>
     </main>
   </body>
@@ -624,11 +892,23 @@ app.use((req, res) => {
 app.listen(port, () => {
   ensureDataDir();
   readState();
-  console.log(`Facebook bot dashboard running on http://localhost:${port}`);
-  if (!appUrl) {
-    console.log("APP_URL is not set yet. Add your Railway domain after deployment.");
-  }
-  if (!pageAccessToken || !pageId) {
-    console.log("Facebook page credentials are incomplete.");
-  }
+  console.log(`Comment automation dashboard running on http://localhost:${port}`);
+
+  setTimeout(() => {
+    requestScan("startup").catch((error) => {
+      console.error("Initial scan failed:", error.message);
+    });
+  }, 1500);
+
+  setInterval(() => {
+    requestScan("interval").catch((error) => {
+      console.error("Scheduled scan failed:", error.message);
+    });
+  }, scanIntervalMs);
+
+  setInterval(() => {
+    processPendingActions().catch((error) => {
+      console.error("Processing queue failed:", error.message);
+    });
+  }, 1500);
 });
