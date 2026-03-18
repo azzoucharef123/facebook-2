@@ -53,6 +53,10 @@ function createInitialState() {
     enabled: true,
     pageId,
     automation: {
+      target: {
+        mode: "all_posts",
+        postId: ""
+      },
       reply: {
         enabled: true,
         message: buildDefaultReplyVariants(),
@@ -118,6 +122,10 @@ function readState() {
       ...structuredClone(defaults),
       ...parsed,
       automation: {
+        target: {
+          ...defaults.automation.target,
+          ...(parsed.automation?.target || {})
+        },
         reply: {
           ...defaults.automation.reply,
           ...(parsed.automation?.reply || {})
@@ -146,6 +154,8 @@ function readState() {
       },
       activity: Array.isArray(parsed.activity) ? parsed.activity : []
     };
+    nextState.automation.target.mode = normalizeTargetMode(nextState.automation.target.mode);
+    nextState.automation.target.postId = normalizeText(nextState.automation.target.postId);
     if (getReplyVariants(nextState.automation.reply.message).length < 100) {
       nextState.automation.reply.message = buildDefaultReplyVariants();
       nextState.automation.reply.nextVariantIndex = 0;
@@ -250,6 +260,14 @@ function escapeHtml(value) {
 function toPositiveNumber(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function normalizeTargetMode(value) {
+  const normalized = normalizeText(value);
+  if (["all_posts", "latest_post", "specific_post"].includes(normalized)) {
+    return normalized;
+  }
+  return "all_posts";
 }
 
 function shrinkText(value, maxLength = 140) {
@@ -518,13 +536,32 @@ async function fetchPagedCollection(nodePath, options = {}) {
   }
 }
 
-async function fetchPagePosts() {
+async function fetchPagePosts(state) {
+  const mode = normalizeTargetMode(state.automation?.target?.mode);
+  const fields = "id,message,created_time,permalink_url";
+
+  if (mode === "specific_post") {
+    const specificPostId = normalizeText(state.automation?.target?.postId);
+
+    if (!specificPostId) {
+      return [];
+    }
+
+    const payload = await graphRequest(specificPostId, {
+      query: {
+        fields
+      }
+    });
+
+    return [normalizePost(payload)];
+  }
+
   const payload = await fetchPagedCollection(`${pageId}/posts`, {
     query: {
-      fields: "id,message,created_time,permalink_url",
+      fields,
       limit: graphPageSizePosts
     },
-    maxItems: 0
+    maxItems: mode === "latest_post" ? 1 : 0
   });
 
   return payload.map(normalizePost);
@@ -561,8 +598,10 @@ async function scanComments(reason) {
   }
 
   try {
-    const posts = await fetchPagePosts();
-    const commentMap = new Map(state.comments.map((comment) => [comment.id, comment]));
+    const posts = await fetchPagePosts(state);
+    const targetPostIds = new Set(posts.map((post) => post.id));
+    const preservedComments = state.comments.filter((comment) => targetPostIds.has(comment.postId));
+    const commentMap = new Map(preservedComments.map((comment) => [comment.id, comment]));
     const discoveredComments = [];
 
     for (const post of posts) {
@@ -577,6 +616,8 @@ async function scanComments(reason) {
     state.posts = posts;
     state.comments = sortCommentsNewestFirst(Array.from(commentMap.values()));
     state.analytics.scannedComments = discoveredComments.length;
+    const visibleCommentIds = new Set(state.comments.map((comment) => comment.id));
+    state.actions = state.actions.filter((action) => visibleCommentIds.has(action.commentId));
 
     const commentsForQueue = [...discoveredComments].sort(
       (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
@@ -860,11 +901,19 @@ app.post("/api/toggle", authRequired, (req, res) => {
 app.post("/api/automation", authRequired, async (req, res) => {
   const state = readState();
   const replyMessage = normalizeText(req.body.replyMessage);
+  const targetMode = normalizeTargetMode(req.body.targetMode);
+  const specificPostId = normalizeText(req.body.specificPostId);
 
   if (!getReplyVariants(replyMessage).length) {
     return res.status(400).json({ ok: false, error: "At least one reply variant is required" });
   }
 
+  if (targetMode === "specific_post" && !specificPostId) {
+    return res.status(400).json({ ok: false, error: "Post ID is required for specific post mode" });
+  }
+
+  state.automation.target.mode = targetMode;
+  state.automation.target.postId = targetMode === "specific_post" ? specificPostId : "";
   state.automation.reply.enabled = true;
   state.automation.reply.message = replyMessage;
   state.automation.reply.delaySeconds = toPositiveNumber(req.body.replyDelaySeconds, 25);
@@ -875,7 +924,13 @@ app.post("/api/automation", authRequired, async (req, res) => {
   state.automation.like.enabled = true;
   state.automation.like.delaySeconds = toPositiveNumber(req.body.likeDelaySeconds, 10);
 
-  addActivity(state, "settings", "تم تحديث إعدادات الرد والإعجاب على التعليقات.");
+  const targetLabel =
+    targetMode === "latest_post"
+      ? "آخر منشور فقط"
+      : targetMode === "specific_post"
+        ? `منشور محدد (${specificPostId})`
+        : "كل المنشورات";
+  addActivity(state, "settings", `تم تحديث الإعدادات ونطاق العمل على ${targetLabel}.`);
   writeState(state);
   await requestScan("settings-save");
   return res.json({ ok: true, state: sanitizeState(readState()) });

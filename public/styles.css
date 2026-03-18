@@ -133,6 +133,10 @@ button:hover,
   color: var(--muted);
 }
 
+.hidden {
+  display: none !important;
+}
+
 .dashboard-body {
   padding: 22px;
   overflow-x: hidden;

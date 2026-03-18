@@ -60,6 +60,24 @@
         </div>
         <form id="automation-form" class="stack-form">
           <label>
+            <span>نطاق المنشور</span>
+            <select id="target-mode" name="targetMode">
+              <option value="all_posts">كل المنشورات</option>
+              <option value="latest_post">آخر منشور فقط</option>
+              <option value="specific_post">منشور محدد بالـ ID</option>
+            </select>
+          </label>
+          <label id="specific-post-wrap" class="hidden">
+            <span>Post ID</span>
+            <input
+              id="specific-post-id"
+              name="specificPostId"
+              type="text"
+              placeholder="مثال: 108133832082057_123456789012345"
+            />
+          </label>
+          <p class="status-text">اختر كل المنشورات، أو آخر منشور فقط، أو أدخل ID منشور محدد ليعمل عليه البوت.</p>
+          <label>
             <span>نص الرد</span>
             <textarea id="reply-message" name="replyMessage" rows="12"></textarea>
           </label>

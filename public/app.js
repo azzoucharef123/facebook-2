@@ -9,6 +9,9 @@ const stateElements = {
   recommendedField: document.getElementById("recommended-field"),
   pageIdText: document.getElementById("page-id-text"),
   lastScanText: document.getElementById("last-scan-text"),
+  targetMode: document.getElementById("target-mode"),
+  specificPostWrap: document.getElementById("specific-post-wrap"),
+  specificPostId: document.getElementById("specific-post-id"),
   replyMessage: document.getElementById("reply-message"),
   replyDelay: document.getElementById("reply-delay"),
   likeDelay: document.getElementById("like-delay"),
@@ -77,6 +80,11 @@ function renderBadge(status) {
   return `<span class="status-badge ${status || "idle"}">${escapeHtml(label)}</span>`;
 }
 
+function syncTargetControls() {
+  const isSpecific = stateElements.targetMode.value === "specific_post";
+  stateElements.specificPostWrap.classList.toggle("hidden", !isSpecific);
+}
+
 function renderState(state) {
   stateElements.statusTitle.textContent = state.enabled ? "الأتمتة تعمل الآن" : "الأتمتة متوقفة";
   stateElements.enabledToggle.checked = state.enabled;
@@ -89,6 +97,9 @@ function renderState(state) {
   stateElements.pageIdText.textContent = state.pageId || "-";
   stateElements.lastScanText.textContent = formatDate(state.analytics.lastScanAt);
 
+  stateElements.targetMode.value = state.automation.target?.mode || "all_posts";
+  stateElements.specificPostId.value = state.automation.target?.postId || "";
+  syncTargetControls();
   stateElements.replyMessage.value = state.automation.reply.message || "";
   stateElements.replyDelay.value = state.automation.reply.delaySeconds;
   stateElements.likeDelay.value = state.automation.like.delaySeconds;
@@ -163,6 +174,8 @@ document.getElementById("enabled-toggle").addEventListener("change", async (even
 
 async function saveAutomationSettings() {
   const payload = {
+    targetMode: stateElements.targetMode.value,
+    specificPostId: stateElements.specificPostId.value,
     replyMessage: stateElements.replyMessage.value,
     replyDelaySeconds: Number(stateElements.replyDelay.value || 0),
     likeDelaySeconds: Number(stateElements.likeDelay.value || 0)
@@ -192,8 +205,13 @@ function scheduleAutosave() {
   }, 700);
 }
 
-[stateElements.replyMessage, stateElements.replyDelay, stateElements.likeDelay].forEach((element) => {
+[stateElements.targetMode, stateElements.specificPostId, stateElements.replyMessage, stateElements.replyDelay, stateElements.likeDelay].forEach((element) => {
   element.addEventListener("input", scheduleAutosave);
+});
+
+stateElements.targetMode.addEventListener("change", () => {
+  syncTargetControls();
+  scheduleAutosave();
 });
 
 document.getElementById("scan-btn").addEventListener("click", async () => {
