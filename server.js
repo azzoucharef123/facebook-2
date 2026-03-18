@@ -28,7 +28,6 @@ const sessionMaxAgeMs = 1000 * 60 * 60 * 12;
 const loginAttempts = new Map();
 const postsLimit = Math.max(1, Number(process.env.POSTS_LIMIT || 8));
 const topCommentsLimit = Math.max(1, Number(process.env.TOP_COMMENTS_LIMIT || 40));
-const replyCommentsLimit = Math.max(1, Number(process.env.REPLY_COMMENTS_LIMIT || 20));
 const scanIntervalMs = Math.max(10000, Number(process.env.SCAN_INTERVAL_MS || 30000));
 const postWindowDays = Math.max(1, Number(process.env.POST_WINDOW_DAYS || 14));
 
@@ -42,6 +41,10 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function normalizeScopeMode(value) {
+  return value === "all" || value === "all_posts" ? "all_posts" : "new_posts";
+}
+
 function createInitialState() {
   const now = nowIso();
   return {
@@ -50,7 +53,7 @@ function createInitialState() {
     automation: {
       reply: {
         enabled: true,
-        mode: "new",
+        mode: "new_posts",
         modeChangedAt: now,
         message: "شكرا على تعليقك. سنراجع طلبك ونرد عليك بالتفصيل قريبا.",
         delaySeconds: 25,
@@ -58,7 +61,7 @@ function createInitialState() {
       },
       like: {
         enabled: true,
-        mode: "new",
+        mode: "new_posts",
         modeChangedAt: now,
         delaySeconds: 10,
         lastProcessedAt: null
@@ -112,7 +115,7 @@ function readState() {
 
   try {
     const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-    return {
+    const nextState = {
       ...structuredClone(defaults),
       ...parsed,
       automation: {
@@ -130,7 +133,9 @@ function readState() {
         ...(parsed.analytics || {})
       },
       posts: Array.isArray(parsed.posts) ? parsed.posts : [],
-      comments: Array.isArray(parsed.comments) ? parsed.comments : [],
+      comments: Array.isArray(parsed.comments)
+        ? parsed.comments.filter((comment) => !comment.parentId)
+        : [],
       actions: Array.isArray(parsed.actions) ? parsed.actions : [],
       processed: {
         repliedCommentIds: Array.isArray(parsed.processed?.repliedCommentIds)
@@ -142,6 +147,9 @@ function readState() {
       },
       activity: Array.isArray(parsed.activity) ? parsed.activity : []
     };
+    nextState.automation.reply.mode = normalizeScopeMode(nextState.automation.reply.mode);
+    nextState.automation.like.mode = normalizeScopeMode(nextState.automation.like.mode);
+    return nextState;
   } catch (error) {
     console.error("Failed to read bot state:", error.message);
     writeState(defaults);
@@ -154,7 +162,16 @@ function sanitizeState(state) {
   return {
     enabled: state.enabled,
     pageId: state.pageId,
-    automation: state.automation,
+    automation: {
+      reply: {
+        ...state.automation.reply,
+        mode: normalizeScopeMode(state.automation.reply.mode)
+      },
+      like: {
+        ...state.automation.like,
+        mode: normalizeScopeMode(state.automation.like.mode)
+      }
+    },
     analytics: {
       scannedComments: state.analytics.scannedComments,
       repliesSent: state.analytics.repliesSent,
@@ -333,6 +350,7 @@ function normalizeComment(rawComment, post, parentId = null) {
     id: rawComment.id,
     postId: post.id,
     postMessage: post.message,
+    postCreatedAt: post.createdAt,
     parentId: rawComment.parent?.id || parentId || null,
     message: normalizeText(rawComment.message),
     authorName: rawComment.from?.name || "Unknown user",
@@ -362,16 +380,16 @@ function mergeComment(existingComment, incomingComment) {
 }
 
 function shouldProcessComment(comment, actionConfig, state) {
-  if (!comment.message || isOwnComment(comment)) {
+  if (!comment.message || isOwnComment(comment) || comment.parentId) {
     return false;
   }
 
-  if (actionConfig.mode === "all") {
+  if (actionConfig.mode === "all_posts") {
     return true;
   }
 
   const anchor = new Date(actionConfig.modeChangedAt || state.createdAt).getTime();
-  return new Date(comment.createdAt).getTime() >= anchor;
+  return new Date(comment.postCreatedAt || comment.createdAt).getTime() >= anchor;
 }
 
 function queueAction(state, type, comment) {
@@ -472,28 +490,16 @@ async function fetchPagePosts() {
     .filter((post) => new Date(post.createdAt).getTime() >= cutoff);
 }
 
-async function fetchCommentsForNode(targetId, post, parentId = null, limit = topCommentsLimit) {
-  const payload = await graphRequest(`${targetId}/comments`, {
+async function fetchTopLevelCommentsForPost(post) {
+  const payload = await graphRequest(`${post.id}/comments`, {
     query: {
       fields: "id,message,created_time,permalink_url,from{id,name},comment_count,parent{id},like_count",
       filter: "stream",
-      limit
+      limit: topCommentsLimit
     }
   });
 
-  const output = [];
-
-  for (const rawComment of payload.data || []) {
-    const comment = normalizeComment(rawComment, post, parentId);
-    output.push(comment);
-
-    if (!parentId && Number(rawComment.comment_count || 0) > 0) {
-      const nested = await fetchCommentsForNode(rawComment.id, post, rawComment.id, replyCommentsLimit);
-      output.push(...nested);
-    }
-  }
-
-  return output;
+  return (payload.data || []).map((rawComment) => normalizeComment(rawComment, post));
 }
 
 async function scanComments(reason) {
@@ -519,7 +525,7 @@ async function scanComments(reason) {
     const discoveredComments = [];
 
     for (const post of posts) {
-      const comments = await fetchCommentsForNode(post.id, post);
+      const comments = await fetchTopLevelCommentsForPost(post);
       for (const comment of comments) {
         const merged = mergeComment(commentMap.get(comment.id), comment);
         commentMap.set(comment.id, merged);
@@ -558,7 +564,7 @@ async function scanComments(reason) {
     addActivity(
       state,
       "scan",
-      `تم فحص التعليقات (${reason}) واكتشاف ${discoveredComments.length} تعليق/رد من ${posts.length} منشور.`
+      `تم فحص تعليقات المنشورات (${reason}) واكتشاف ${discoveredComments.length} تعليق من ${posts.length} منشور.`
     );
     writeState(state);
     return sanitizeState(state);
@@ -813,8 +819,8 @@ app.post("/api/toggle", authRequired, (req, res) => {
 app.post("/api/automation", authRequired, async (req, res) => {
   const state = readState();
   const now = nowIso();
-  const nextReplyMode = req.body.replyMode === "all" ? "all" : "new";
-  const nextLikeMode = req.body.likeMode === "all" ? "all" : "new";
+  const nextReplyMode = req.body.replyMode === "all_posts" ? "all_posts" : "new_posts";
+  const nextLikeMode = req.body.likeMode === "all_posts" ? "all_posts" : "new_posts";
   const replyMessage = normalizeText(req.body.replyMessage);
 
   if (Boolean(req.body.replyEnabled) && !replyMessage) {
@@ -859,7 +865,7 @@ app.get("/setup", authRequired, (req, res) => {
   <body class="setup-body">
     <main class="setup-card">
       <h1>إعداد متابعة التعليقات</h1>
-      <p>استخدم Webhook لإشعار التطبيق بوجود نشاط جديد، والتطبيق سيقوم بالفحص والرد والإعجاب حسب إعداداتك.</p>
+      <p>استخدم Webhook لإشعار التطبيق بوجود نشاط جديد، والتطبيق سيتابع تعليقات المنشورات فقط ويتجاهل ردود التعليقات.</p>
       <div class="setup-grid">
         <div class="setup-item">
           <strong>Webhook URL</strong>

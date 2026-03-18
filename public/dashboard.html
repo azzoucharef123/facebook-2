@@ -10,7 +10,7 @@
     <header class="topbar">
       <div>
         <p class="eyebrow">Facebook Comment Automation</p>
-        <h1>الرد والإعجاب على التعليقات</h1>
+        <h1>التحكم في تعليقات المنشورات</h1>
       </div>
       <div class="topbar-actions">
         <a class="ghost-button" href="/setup">إعداد Webhook</a>
@@ -61,13 +61,13 @@
         <form id="automation-form" class="stack-form">
           <label class="toggle">
             <input id="reply-enabled" name="replyEnabled" type="checkbox" />
-            <span>تفعيل الرد على التعليقات</span>
+            <span>تفعيل الرد على تعليقات المنشورات</span>
           </label>
           <label>
             <span>نطاق الرد</span>
             <select id="reply-mode" name="replyMode">
-              <option value="new">التعليقات الجديدة فقط</option>
-              <option value="all">كل التعليقات الحالية</option>
+              <option value="new_posts">المنشورات الجديدة</option>
+              <option value="all_posts">كل المنشورات</option>
             </select>
           </label>
           <label>
@@ -83,13 +83,13 @@
 
           <label class="toggle">
             <input id="like-enabled" name="likeEnabled" type="checkbox" />
-            <span>تفعيل الإعجاب بالتعليقات</span>
+            <span>تفعيل الإعجاب بتعليقات المنشورات</span>
           </label>
           <label>
             <span>نطاق الإعجاب</span>
             <select id="like-mode" name="likeMode">
-              <option value="new">التعليقات الجديدة فقط</option>
-              <option value="all">كل التعليقات الحالية</option>
+              <option value="new_posts">تعليقات المنشورات الجديدة</option>
+              <option value="all_posts">تعليقات حتى المنشورات القديمة</option>
             </select>
           </label>
           <label>
@@ -139,8 +139,8 @@
       <section class="card wide-card">
         <div class="card-head">
           <div>
-            <p class="eyebrow">آخر التعليقات</p>
-            <h2>قائمة التعليقات التي يتابعها النظام</h2>
+            <p class="eyebrow">تعليقات المنشورات فقط</p>
+            <h2>القائمة لا تشمل ردود التعليقات</h2>
           </div>
         </div>
         <div id="comments-list" class="list-shell"></div>
